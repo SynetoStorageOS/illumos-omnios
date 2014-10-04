@@ -25,11 +25,12 @@
 # Copyright 2012 OmniTI Computer Consulting, Inc.  All rights reserved.
 # Copyright (c) 2012 by Delphix. All rights reserved.
 # Copyright (c) 2013 DEY Storage Systems, Inc. All rights reserved.
+# Copyright 2014 Garrett D'Amore <garrett@damore.org>
 
 include ../Makefile.master
 
 #
-#	Note that the commands 'agents', 'lp', 'perl', and 'man' are first in
+#	Note that the commands 'lp', and 'perl' are first in
 #	the list, violating alphabetical order.  This is because they are very
 #	long-running and should be given the most wall-clock time for a
 #	parallel build.
@@ -53,7 +54,6 @@ COMMON_SUBDIRS=		\
 	availdevs	\
 	lp		\
 	perl		\
-	man		\
 	Adm		\
 	abi		\
 	adbgen		\
@@ -158,7 +158,6 @@ COMMON_SUBDIRS=		\
 	filesync	\
 	fgrep		\
 	file		\
-	filebench	\
 	find		\
 	flowadm		\
 	flowstat	\
@@ -253,6 +252,8 @@ COMMON_SUBDIRS=		\
 	mail		\
 	mailx		\
 	makekey		\
+	man		\
+	mandoc		\
 	mdb		\
 	mesg		\
 	mkdir		\
@@ -476,8 +477,6 @@ i386_SUBDIRS=		\
 	biosdev		\
 	diskscan	\
 	lms		\
-	ntfsprogs	\
-	parted		\
 	rtc		\
 	ucodeadm	\
 	xvm
@@ -499,12 +498,11 @@ sparc_SUBDIRS=		\
 	vntsd
 
 #
-# Commands that are messaged.  Note that 'lp' and 'man' come first
-# (see previous comment about 'lp' and 'man').
+# Commands that are messaged.  Note that 'lp' comes first
+# (see previous comment about 'lp'.)
 #
 MSGSUBDIRS=		\
 	lp		\
-	man		\
 	abi		\
 	acctadm		\
 	allocate	\
@@ -618,6 +616,7 @@ MSGSUBDIRS=		\
 	luxadm		\
 	lvm		\
 	mailx		\
+	man		\
 	mesg		\
 	mkdir		\
 	mkpwdict	\

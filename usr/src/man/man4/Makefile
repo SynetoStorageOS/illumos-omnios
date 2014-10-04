@@ -114,7 +114,6 @@ _MANFILES=	Intro.4				\
 		mech.4				\
 		meddb.4				\
 		mnttab.4			\
-		mod_ipp.4			\
 		mpapi.conf.4			\
 		nca.if.4			\
 		ncad_addr.4			\
@@ -187,7 +186,7 @@ _MANFILES=	Intro.4				\
 		smbautohome.4			\
 		smhba.conf.4			\
 		sndr.4				\
-		sock2path.4			\
+		sock2path.d.4			\
 		space.4				\
 		ssh_config.4			\
 		sshd_config.4			\

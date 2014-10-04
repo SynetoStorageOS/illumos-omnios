@@ -21,9 +21,10 @@
 
 /*
  * Copyright (c) 2009, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright 2012 Nexenta Systems, Inc. All rights reserved.
+ * Copyright 2014 Nexenta Systems, Inc. All rights reserved.
  * Copyright (c) 2014, Joyent, Inc. All rights reserved.
  * Copyright 2014 OmniTI Computer Consulting, Inc. All rights reserved.
+ * Copyright (c) 2014, Tegile Systems Inc. All rights reserved.
  */
 
 /*
@@ -54,7 +55,7 @@
  */
 
 /*
- * mptsas - This is a driver based on LSI Logic's MPT2.0 interface.
+ * mptsas - This is a driver based on LSI Logic's MPT2.0/2.5 interface.
  *
  */
 
@@ -240,7 +241,7 @@ static void mptsas_sge_setup(mptsas_t *mpt, mptsas_cmd_t *cmd,
 
 static void mptsas_watch(void *arg);
 static void mptsas_watchsubr(mptsas_t *mpt);
-static void mptsas_cmd_timeout(mptsas_t *mpt, uint16_t devhdl);
+static void mptsas_cmd_timeout(mptsas_t *mpt, mptsas_target_t *ptgt);
 
 static void mptsas_start_passthru(mptsas_t *mpt, mptsas_cmd_t *cmd);
 static int mptsas_do_passthru(mptsas_t *mpt, uint8_t *request, uint8_t *reply,
@@ -427,6 +428,13 @@ static int mptsas_init_pm(mptsas_t *mpt);
  */
 boolean_t mptsas_enable_msi = B_TRUE;
 boolean_t mptsas_physical_bind_failed_page_83 = B_FALSE;
+
+/*
+ * Global switch for use of MPI2.5 FAST PATH.
+ * We don't really know what FAST PATH actually does, so if it is suspected
+ * to cause problems it can be turned off by setting this variable to B_FALSE.
+ */
+boolean_t mptsas_use_fastpath = B_TRUE;
 
 static int mptsas_register_intrs(mptsas_t *);
 static void mptsas_unregister_intrs(mptsas_t *);
@@ -800,7 +808,7 @@ mptsas_iport_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	uint64_t		attached_sas_wwn;
 	uint16_t		dev_hdl;
 	uint16_t		pdev_hdl;
-	uint16_t		bay_num, enclosure;
+	uint16_t		bay_num, enclosure, io_flags;
 	char			attached_wwnstr[MPTSAS_WWN_STRLEN];
 
 	/* CONSTCOND */
@@ -962,7 +970,7 @@ mptsas_iport_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	    MPI2_SAS_DEVICE_PGAD_FORM_MASK) | (uint32_t)attached_devhdl;
 	rval = mptsas_get_sas_device_page0(mpt, page_address, &dev_hdl,
 	    &attached_sas_wwn, &dev_info, &phy_port, &phy_id,
-	    &pdev_hdl, &bay_num, &enclosure);
+	    &pdev_hdl, &bay_num, &enclosure, &io_flags);
 	if (rval != DDI_SUCCESS) {
 		mptsas_log(mpt, CE_WARN,
 		    "Failed to get device page0 for handle:%d",
@@ -1029,6 +1037,7 @@ mptsas_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	char			event_taskq_create = 0;
 	char			dr_taskq_create = 0;
 	char			doneq_thread_create = 0;
+	char			added_watchdog = 0;
 	scsi_hba_tran_t		*hba_tran;
 	uint_t			mem_bar = MEM_SPACE;
 	int			rval = DDI_FAILURE;
@@ -1261,6 +1270,15 @@ mptsas_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 		doneq_thread_create++;
 	}
 
+	/*
+	 * Disable hardware interrupt since we're not ready to
+	 * handle it yet.
+	 */
+	MPTSAS_DISABLE_INTR(mpt);
+	if (mptsas_register_intrs(mpt) == FALSE)
+		goto fail;
+	intr_added++;
+
 	/* Initialize mutex used in interrupt handler */
 	mutex_init(&mpt->m_mutex, NULL, MUTEX_DRIVER,
 	    DDI_INTR_PRI(mpt->m_intr_pri));
@@ -1279,15 +1297,6 @@ mptsas_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	cv_init(&mpt->m_config_cv, NULL, CV_DRIVER, NULL);
 	cv_init(&mpt->m_fw_diag_cv, NULL, CV_DRIVER, NULL);
 	mutex_init_done++;
-
-	/*
-	 * Disable hardware interrupt since we're not ready to
-	 * handle it yet.
-	 */
-	MPTSAS_DISABLE_INTR(mpt);
-	if (mptsas_register_intrs(mpt) == FALSE)
-		goto fail;
-	intr_added++;
 
 	mutex_enter(&mpt->m_mutex);
 	/*
@@ -1390,7 +1399,28 @@ mptsas_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	mutex_exit(&mpt->m_mutex);
 
 	/*
-	 * Initialize PHY info for smhba
+	 * used for mptsas_watch
+	 */
+	mptsas_list_add(mpt);
+
+	mutex_enter(&mptsas_global_mutex);
+	if (mptsas_timeouts_enabled == 0) {
+		mptsas_scsi_watchdog_tick = ddi_prop_get_int(DDI_DEV_T_ANY,
+		    dip, 0, "scsi-watchdog-tick", DEFAULT_WD_TICK);
+
+		mptsas_tick = mptsas_scsi_watchdog_tick *
+		    drv_usectohz((clock_t)1000000);
+
+		mptsas_timeout_id = timeout(mptsas_watch, NULL, mptsas_tick);
+		mptsas_timeouts_enabled = 1;
+	}
+	mutex_exit(&mptsas_global_mutex);
+	added_watchdog++;
+
+	/*
+	 * Initialize PHY info for smhba.
+	 * This requires watchdog to be enabled otherwise if interrupts
+	 * don't work the system will hang.
 	 */
 	if (mptsas_smhba_setup(mpt)) {
 		mptsas_log(mpt, CE_WARN, "mptsas phy initialization "
@@ -1432,23 +1462,6 @@ mptsas_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	/*
 	 * After this point, we are not going to fail the attach.
 	 */
-	/*
-	 * used for mptsas_watch
-	 */
-	mptsas_list_add(mpt);
-
-	mutex_enter(&mptsas_global_mutex);
-	if (mptsas_timeouts_enabled == 0) {
-		mptsas_scsi_watchdog_tick = ddi_prop_get_int(DDI_DEV_T_ANY,
-		    dip, 0, "scsi-watchdog-tick", DEFAULT_WD_TICK);
-
-		mptsas_tick = mptsas_scsi_watchdog_tick *
-		    drv_usectohz((clock_t)1000000);
-
-		mptsas_timeout_id = timeout(mptsas_watch, NULL, mptsas_tick);
-		mptsas_timeouts_enabled = 1;
-	}
-	mutex_exit(&mptsas_global_mutex);
 
 	/* Print message of HBA present */
 	ddi_report_dev(dip);
@@ -1465,18 +1478,22 @@ fail:
 	mptsas_fm_ereport(mpt, DDI_FM_DEVICE_NO_RESPONSE);
 	ddi_fm_service_impact(mpt->m_dip, DDI_SERVICE_LOST);
 	if (mpt) {
-		mutex_enter(&mptsas_global_mutex);
-
-		if (mptsas_timeout_id && (mptsas_head == NULL)) {
-			timeout_id_t tid = mptsas_timeout_id;
-			mptsas_timeouts_enabled = 0;
-			mptsas_timeout_id = 0;
-			mutex_exit(&mptsas_global_mutex);
-			(void) untimeout(tid);
-			mutex_enter(&mptsas_global_mutex);
-		}
-		mutex_exit(&mptsas_global_mutex);
 		/* deallocate in reverse order */
+		if (added_watchdog) {
+			mptsas_list_del(mpt);
+			mutex_enter(&mptsas_global_mutex);
+
+			if (mptsas_timeout_id && (mptsas_head == NULL)) {
+				timeout_id_t tid = mptsas_timeout_id;
+				mptsas_timeouts_enabled = 0;
+				mptsas_timeout_id = 0;
+				mutex_exit(&mptsas_global_mutex);
+				(void) untimeout(tid);
+				mutex_enter(&mptsas_global_mutex);
+			}
+			mutex_exit(&mptsas_global_mutex);
+		}
+
 		mptsas_cache_destroy(mpt);
 
 		if (smp_attach_setup) {
@@ -3373,17 +3390,17 @@ mptsas_save_cmd(mptsas_t *mpt, mptsas_cmd_t *cmd)
 	 * event acknoledgment)
 	 */
 	if ((cmd->cmd_flags & CFLAG_CMDIOC) == 0) {
+		/*
+		 * Expiration time is set in mptsas_start_cmd
+		 */
 		ptgt->m_t_ncmds++;
-	}
-	cmd->cmd_active_timeout = cmd->cmd_pkt->pkt_time;
-
-	/*
-	 * If initial timout is less than or equal to one tick, bump
-	 * the timeout by a tick so that command doesn't timeout before
-	 * its allotted time.
-	 */
-	if (cmd->cmd_active_timeout <= mptsas_scsi_watchdog_tick) {
-		cmd->cmd_active_timeout += mptsas_scsi_watchdog_tick;
+		cmd->cmd_active_expiration = 0;
+	} else {
+		/*
+		 * Initialize expiration time for passthrough commands,
+		 */
+		cmd->cmd_active_expiration = gethrtime() +
+		    (hrtime_t)cmd->cmd_pkt->pkt_time * NANOSEC;
 	}
 	return (TRUE);
 }
@@ -4178,15 +4195,59 @@ mptsas_pkt_comp(struct scsi_pkt *pkt, mptsas_cmd_t *cmd)
 }
 
 static void
-mptsas_sge_setup(mptsas_t *mpt, mptsas_cmd_t *cmd, uint32_t *control,
-	pMpi2SCSIIORequest_t frame, ddi_acc_handle_t acc_hdl)
+mptsas_sge_mainframe(mptsas_cmd_t *cmd, pMpi2SCSIIORequest_t frame,
+    ddi_acc_handle_t acc_hdl, uint_t cookiec, uint32_t end_flags)
 {
+	pMpi2SGESimple64_t	sge;
+	mptti_t			*dmap;
+	uint32_t		flags;
+
+	dmap = cmd->cmd_sg;
+
+	sge = (pMpi2SGESimple64_t)(&frame->SGL);
+	while (cookiec--) {
+		ddi_put32(acc_hdl,
+		    &sge->Address.Low, dmap->addr.address64.Low);
+		ddi_put32(acc_hdl,
+		    &sge->Address.High, dmap->addr.address64.High);
+		ddi_put32(acc_hdl, &sge->FlagsLength,
+		    dmap->count);
+		flags = ddi_get32(acc_hdl, &sge->FlagsLength);
+		flags |= ((uint32_t)
+		    (MPI2_SGE_FLAGS_SIMPLE_ELEMENT |
+		    MPI2_SGE_FLAGS_SYSTEM_ADDRESS |
+		    MPI2_SGE_FLAGS_64_BIT_ADDRESSING) <<
+		    MPI2_SGE_FLAGS_SHIFT);
+
+		/*
+		 * If this is the last cookie, we set the flags
+		 * to indicate so
+		 */
+		if (cookiec == 0) {
+			flags |= end_flags;
+		}
+		if (cmd->cmd_flags & CFLAG_DMASEND) {
+			flags |= (MPI2_SGE_FLAGS_HOST_TO_IOC <<
+			    MPI2_SGE_FLAGS_SHIFT);
+		} else {
+			flags |= (MPI2_SGE_FLAGS_IOC_TO_HOST <<
+			    MPI2_SGE_FLAGS_SHIFT);
+		}
+		ddi_put32(acc_hdl, &sge->FlagsLength, flags);
+		dmap++;
+		sge++;
+	}
+}
+
+static void
+mptsas_sge_chain(mptsas_t *mpt, mptsas_cmd_t *cmd,
+    pMpi2SCSIIORequest_t frame, ddi_acc_handle_t acc_hdl)
+{
+	pMpi2SGESimple64_t	sge;
+	pMpi2SGEChain64_t	sgechain;
 	uint_t			cookiec;
 	mptti_t			*dmap;
 	uint32_t		flags;
-	pMpi2SGESimple64_t	sge;
-	pMpi2SGEChain64_t	sgechain;
-	ASSERT(cmd->cmd_flags & CFLAG_DMAVALID);
 
 	/*
 	 * Save the number of entries in the DMA
@@ -4194,7 +4255,610 @@ mptsas_sge_setup(mptsas_t *mpt, mptsas_cmd_t *cmd, uint32_t *control,
 	 */
 	cookiec = cmd->cmd_cookiec;
 
-	NDBG1(("mptsas_sge_setup: cookiec=%d", cookiec));
+	/*
+	 * Hereby we start to deal with multiple frames.
+	 * The process is as follows:
+	 * 1. Determine how many frames are needed for SGL element
+	 *    storage; Note that all frames are stored in contiguous
+	 *    memory space and in 64-bit DMA mode each element is
+	 *    3 double-words (12 bytes) long.
+	 * 2. Fill up the main frame. We need to do this separately
+	 *    since it contains the SCSI IO request header and needs
+	 *    dedicated processing. Note that the last 4 double-words
+	 *    of the SCSI IO header is for SGL element storage
+	 *    (MPI2_SGE_IO_UNION).
+	 * 3. Fill the chain element in the main frame, so the DMA
+	 *    engine can use the following frames.
+	 * 4. Enter a loop to fill the remaining frames. Note that the
+	 *    last frame contains no chain element.  The remaining
+	 *    frames go into the mpt SGL buffer allocated on the fly,
+	 *    not immediately following the main message frame, as in
+	 *    Gen1.
+	 * Some restrictions:
+	 * 1. For 64-bit DMA, the simple element and chain element
+	 *    are both of 3 double-words (12 bytes) in size, even
+	 *    though all frames are stored in the first 4G of mem
+	 *    range and the higher 32-bits of the address are always 0.
+	 * 2. On some controllers (like the 1064/1068), a frame can
+	 *    hold SGL elements with the last 1 or 2 double-words
+	 *    (4 or 8 bytes) un-used. On these controllers, we should
+	 *    recognize that there's not enough room for another SGL
+	 *    element and move the sge pointer to the next frame.
+	 */
+	int			i, j, k, l, frames, sgemax;
+	int			temp;
+	uint8_t			chainflags;
+	uint16_t		chainlength;
+	mptsas_cache_frames_t	*p;
+
+	/*
+	 * Sgemax is the number of SGE's that will fit
+	 * each extra frame and frames is total
+	 * number of frames we'll need.  1 sge entry per
+	 * frame is reseverd for the chain element thus the -1 below.
+	 */
+	sgemax = ((mpt->m_req_frame_size / sizeof (MPI2_SGE_SIMPLE64))
+	    - 1);
+	temp = (cookiec - (MPTSAS_MAX_FRAME_SGES64(mpt) - 1)) / sgemax;
+
+	/*
+	 * A little check to see if we need to round up the number
+	 * of frames we need
+	 */
+	if ((cookiec - (MPTSAS_MAX_FRAME_SGES64(mpt) - 1)) - (temp *
+	    sgemax) > 1) {
+		frames = (temp + 1);
+	} else {
+		frames = temp;
+	}
+	dmap = cmd->cmd_sg;
+	sge = (pMpi2SGESimple64_t)(&frame->SGL);
+
+	/*
+	 * First fill in the main frame
+	 */
+	j = MPTSAS_MAX_FRAME_SGES64(mpt) - 1;
+	mptsas_sge_mainframe(cmd, frame, acc_hdl, j,
+	    ((uint32_t)(MPI2_SGE_FLAGS_LAST_ELEMENT) <<
+	    MPI2_SGE_FLAGS_SHIFT));
+	dmap += j;
+	sge += j;
+	j++;
+
+	/*
+	 * Fill in the chain element in the main frame.
+	 * About calculation on ChainOffset:
+	 * 1. Struct msg_scsi_io_request has 4 double-words (16 bytes)
+	 *    in the end reserved for SGL element storage
+	 *    (MPI2_SGE_IO_UNION); we should count it in our
+	 *    calculation.  See its definition in the header file.
+	 * 2. Constant j is the counter of the current SGL element
+	 *    that will be processed, and (j - 1) is the number of
+	 *    SGL elements that have been processed (stored in the
+	 *    main frame).
+	 * 3. ChainOffset value should be in units of double-words (4
+	 *    bytes) so the last value should be divided by 4.
+	 */
+	ddi_put8(acc_hdl, &frame->ChainOffset,
+	    (sizeof (MPI2_SCSI_IO_REQUEST) -
+	    sizeof (MPI2_SGE_IO_UNION) +
+	    (j - 1) * sizeof (MPI2_SGE_SIMPLE64)) >> 2);
+	sgechain = (pMpi2SGEChain64_t)sge;
+	chainflags = (MPI2_SGE_FLAGS_CHAIN_ELEMENT |
+	    MPI2_SGE_FLAGS_SYSTEM_ADDRESS |
+	    MPI2_SGE_FLAGS_64_BIT_ADDRESSING);
+	ddi_put8(acc_hdl, &sgechain->Flags, chainflags);
+
+	/*
+	 * The size of the next frame is the accurate size of space
+	 * (in bytes) used to store the SGL elements. j is the counter
+	 * of SGL elements. (j - 1) is the number of SGL elements that
+	 * have been processed (stored in frames).
+	 */
+	if (frames >= 2) {
+		ASSERT(mpt->m_req_frame_size >= sizeof (MPI2_SGE_SIMPLE64));
+		chainlength = mpt->m_req_frame_size /
+		    sizeof (MPI2_SGE_SIMPLE64) *
+		    sizeof (MPI2_SGE_SIMPLE64);
+	} else {
+		chainlength = ((cookiec - (j - 1)) *
+		    sizeof (MPI2_SGE_SIMPLE64));
+	}
+
+	p = cmd->cmd_extra_frames;
+
+	ddi_put16(acc_hdl, &sgechain->Length, chainlength);
+	ddi_put32(acc_hdl, &sgechain->Address.Low,
+	    p->m_phys_addr);
+	/* SGL is allocated in the first 4G mem range */
+	ddi_put32(acc_hdl, &sgechain->Address.High, 0);
+
+	/*
+	 * If there are more than 2 frames left we have to
+	 * fill in the next chain offset to the location of
+	 * the chain element in the next frame.
+	 * sgemax is the number of simple elements in an extra
+	 * frame. Note that the value NextChainOffset should be
+	 * in double-words (4 bytes).
+	 */
+	if (frames >= 2) {
+		ddi_put8(acc_hdl, &sgechain->NextChainOffset,
+		    (sgemax * sizeof (MPI2_SGE_SIMPLE64)) >> 2);
+	} else {
+		ddi_put8(acc_hdl, &sgechain->NextChainOffset, 0);
+	}
+
+	/*
+	 * Jump to next frame;
+	 * Starting here, chain buffers go into the per command SGL.
+	 * This buffer is allocated when chain buffers are needed.
+	 */
+	sge = (pMpi2SGESimple64_t)p->m_frames_addr;
+	i = cookiec;
+
+	/*
+	 * Start filling in frames with SGE's.  If we
+	 * reach the end of frame and still have SGE's
+	 * to fill we need to add a chain element and
+	 * use another frame.  j will be our counter
+	 * for what cookie we are at and i will be
+	 * the total cookiec. k is the current frame
+	 */
+	for (k = 1; k <= frames; k++) {
+		for (l = 1; (l <= (sgemax + 1)) && (j <= i); j++, l++) {
+
+			/*
+			 * If we have reached the end of frame
+			 * and we have more SGE's to fill in
+			 * we have to fill the final entry
+			 * with a chain element and then
+			 * continue to the next frame
+			 */
+			if ((l == (sgemax + 1)) && (k != frames)) {
+				sgechain = (pMpi2SGEChain64_t)sge;
+				j--;
+				chainflags = (
+				    MPI2_SGE_FLAGS_CHAIN_ELEMENT |
+				    MPI2_SGE_FLAGS_SYSTEM_ADDRESS |
+				    MPI2_SGE_FLAGS_64_BIT_ADDRESSING);
+				ddi_put8(p->m_acc_hdl,
+				    &sgechain->Flags, chainflags);
+				/*
+				 * k is the frame counter and (k + 1)
+				 * is the number of the next frame.
+				 * Note that frames are in contiguous
+				 * memory space.
+				 */
+				ddi_put32(p->m_acc_hdl,
+				    &sgechain->Address.Low,
+				    (p->m_phys_addr +
+				    (mpt->m_req_frame_size * k)));
+				ddi_put32(p->m_acc_hdl,
+				    &sgechain->Address.High, 0);
+
+				/*
+				 * If there are more than 2 frames left
+				 * we have to next chain offset to
+				 * the location of the chain element
+				 * in the next frame and fill in the
+				 * length of the next chain
+				 */
+				if ((frames - k) >= 2) {
+					ddi_put8(p->m_acc_hdl,
+					    &sgechain->NextChainOffset,
+					    (sgemax *
+					    sizeof (MPI2_SGE_SIMPLE64))
+					    >> 2);
+					ddi_put16(p->m_acc_hdl,
+					    &sgechain->Length,
+					    mpt->m_req_frame_size /
+					    sizeof (MPI2_SGE_SIMPLE64) *
+					    sizeof (MPI2_SGE_SIMPLE64));
+				} else {
+					/*
+					 * This is the last frame. Set
+					 * the NextChainOffset to 0 and
+					 * Length is the total size of
+					 * all remaining simple elements
+					 */
+					ddi_put8(p->m_acc_hdl,
+					    &sgechain->NextChainOffset,
+					    0);
+					ddi_put16(p->m_acc_hdl,
+					    &sgechain->Length,
+					    (cookiec - j) *
+					    sizeof (MPI2_SGE_SIMPLE64));
+				}
+
+				/* Jump to the next frame */
+				sge = (pMpi2SGESimple64_t)
+				    ((char *)p->m_frames_addr +
+				    (int)mpt->m_req_frame_size * k);
+
+				continue;
+			}
+
+			ddi_put32(p->m_acc_hdl,
+			    &sge->Address.Low,
+			    dmap->addr.address64.Low);
+			ddi_put32(p->m_acc_hdl,
+			    &sge->Address.High,
+			    dmap->addr.address64.High);
+			ddi_put32(p->m_acc_hdl,
+			    &sge->FlagsLength, dmap->count);
+			flags = ddi_get32(p->m_acc_hdl,
+			    &sge->FlagsLength);
+			flags |= ((uint32_t)(
+			    MPI2_SGE_FLAGS_SIMPLE_ELEMENT |
+			    MPI2_SGE_FLAGS_SYSTEM_ADDRESS |
+			    MPI2_SGE_FLAGS_64_BIT_ADDRESSING) <<
+			    MPI2_SGE_FLAGS_SHIFT);
+
+			/*
+			 * If we are at the end of the frame and
+			 * there is another frame to fill in
+			 * we set the last simple element as last
+			 * element
+			 */
+			if ((l == sgemax) && (k != frames)) {
+				flags |= ((uint32_t)
+				    (MPI2_SGE_FLAGS_LAST_ELEMENT) <<
+				    MPI2_SGE_FLAGS_SHIFT);
+			}
+
+			/*
+			 * If this is the final cookie we
+			 * indicate it by setting the flags
+			 */
+			if (j == i) {
+				flags |= ((uint32_t)
+				    (MPI2_SGE_FLAGS_LAST_ELEMENT |
+				    MPI2_SGE_FLAGS_END_OF_BUFFER |
+				    MPI2_SGE_FLAGS_END_OF_LIST) <<
+				    MPI2_SGE_FLAGS_SHIFT);
+			}
+			if (cmd->cmd_flags & CFLAG_DMASEND) {
+				flags |=
+				    (MPI2_SGE_FLAGS_HOST_TO_IOC <<
+				    MPI2_SGE_FLAGS_SHIFT);
+			} else {
+				flags |=
+				    (MPI2_SGE_FLAGS_IOC_TO_HOST <<
+				    MPI2_SGE_FLAGS_SHIFT);
+			}
+			ddi_put32(p->m_acc_hdl,
+			    &sge->FlagsLength, flags);
+			dmap++;
+			sge++;
+		}
+	}
+
+	/*
+	 * Sync DMA with the chain buffers that were just created
+	 */
+	(void) ddi_dma_sync(p->m_dma_hdl, 0, 0, DDI_DMA_SYNC_FORDEV);
+}
+
+static void
+mptsas_ieee_sge_mainframe(mptsas_cmd_t *cmd, pMpi2SCSIIORequest_t frame,
+    ddi_acc_handle_t acc_hdl, uint_t cookiec, uint8_t end_flag)
+{
+	pMpi2IeeeSgeSimple64_t	ieeesge;
+	mptti_t			*dmap;
+	uint8_t			flags;
+
+	dmap = cmd->cmd_sg;
+
+	NDBG1(("mptsas_ieee_sge_mainframe: cookiec=%d, %s", cookiec,
+	    cmd->cmd_flags & CFLAG_DMASEND?"Out":"In"));
+
+	ieeesge = (pMpi2IeeeSgeSimple64_t)(&frame->SGL);
+	while (cookiec--) {
+		ddi_put32(acc_hdl,
+		    &ieeesge->Address.Low, dmap->addr.address64.Low);
+		ddi_put32(acc_hdl,
+		    &ieeesge->Address.High, dmap->addr.address64.High);
+		ddi_put32(acc_hdl, &ieeesge->Length,
+		    dmap->count);
+		NDBG1(("mptsas_ieee_sge_mainframe: len=%d", dmap->count));
+		flags = (MPI2_IEEE_SGE_FLAGS_SIMPLE_ELEMENT |
+		    MPI2_IEEE_SGE_FLAGS_SYSTEM_ADDR);
+
+		/*
+		 * If this is the last cookie, we set the flags
+		 * to indicate so
+		 */
+		if (cookiec == 0) {
+			flags |= end_flag;
+		}
+
+		ddi_put8(acc_hdl, &ieeesge->Flags, flags);
+		dmap++;
+		ieeesge++;
+	}
+}
+
+static void
+mptsas_ieee_sge_chain(mptsas_t *mpt, mptsas_cmd_t *cmd,
+    pMpi2SCSIIORequest_t frame, ddi_acc_handle_t acc_hdl)
+{
+	pMpi2IeeeSgeSimple64_t	ieeesge;
+	pMpi25IeeeSgeChain64_t	ieeesgechain;
+	uint_t			cookiec;
+	mptti_t			*dmap;
+	uint8_t			flags;
+
+	/*
+	 * Save the number of entries in the DMA
+	 * Scatter/Gather list
+	 */
+	cookiec = cmd->cmd_cookiec;
+
+	NDBG1(("mptsas_ieee_sge_chain: cookiec=%d", cookiec));
+
+	/*
+	 * Hereby we start to deal with multiple frames.
+	 * The process is as follows:
+	 * 1. Determine how many frames are needed for SGL element
+	 *    storage; Note that all frames are stored in contiguous
+	 *    memory space and in 64-bit DMA mode each element is
+	 *    4 double-words (16 bytes) long.
+	 * 2. Fill up the main frame. We need to do this separately
+	 *    since it contains the SCSI IO request header and needs
+	 *    dedicated processing. Note that the last 4 double-words
+	 *    of the SCSI IO header is for SGL element storage
+	 *    (MPI2_SGE_IO_UNION).
+	 * 3. Fill the chain element in the main frame, so the DMA
+	 *    engine can use the following frames.
+	 * 4. Enter a loop to fill the remaining frames. Note that the
+	 *    last frame contains no chain element.  The remaining
+	 *    frames go into the mpt SGL buffer allocated on the fly,
+	 *    not immediately following the main message frame, as in
+	 *    Gen1.
+	 * Restrictions:
+	 *    For 64-bit DMA, the simple element and chain element
+	 *    are both of 4 double-words (16 bytes) in size, even
+	 *    though all frames are stored in the first 4G of mem
+	 *    range and the higher 32-bits of the address are always 0.
+	 */
+	int			i, j, k, l, frames, sgemax;
+	int			temp;
+	uint8_t			chainflags;
+	uint32_t		chainlength;
+	mptsas_cache_frames_t	*p;
+
+	/*
+	 * Sgemax is the number of SGE's that will fit
+	 * each extra frame and frames is total
+	 * number of frames we'll need.  1 sge entry per
+	 * frame is reseverd for the chain element thus the -1 below.
+	 */
+	sgemax = ((mpt->m_req_frame_size / sizeof (MPI2_IEEE_SGE_SIMPLE64))
+	    - 1);
+	temp = (cookiec - (MPTSAS_MAX_FRAME_SGES64(mpt) - 1)) / sgemax;
+
+	/*
+	 * A little check to see if we need to round up the number
+	 * of frames we need
+	 */
+	if ((cookiec - (MPTSAS_MAX_FRAME_SGES64(mpt) - 1)) - (temp *
+	    sgemax) > 1) {
+		frames = (temp + 1);
+	} else {
+		frames = temp;
+	}
+	NDBG1(("mptsas_ieee_sge_chain: temp=%d, frames=%d", temp, frames));
+	dmap = cmd->cmd_sg;
+	ieeesge = (pMpi2IeeeSgeSimple64_t)(&frame->SGL);
+
+	/*
+	 * First fill in the main frame
+	 */
+	j = MPTSAS_MAX_FRAME_SGES64(mpt) - 1;
+	mptsas_ieee_sge_mainframe(cmd, frame, acc_hdl, j, 0);
+	dmap += j;
+	ieeesge += j;
+	j++;
+
+	/*
+	 * Fill in the chain element in the main frame.
+	 * About calculation on ChainOffset:
+	 * 1. Struct msg_scsi_io_request has 4 double-words (16 bytes)
+	 *    in the end reserved for SGL element storage
+	 *    (MPI2_SGE_IO_UNION); we should count it in our
+	 *    calculation.  See its definition in the header file.
+	 * 2. Constant j is the counter of the current SGL element
+	 *    that will be processed, and (j - 1) is the number of
+	 *    SGL elements that have been processed (stored in the
+	 *    main frame).
+	 * 3. ChainOffset value should be in units of quad-words (16
+	 *    bytes) so the last value should be divided by 16.
+	 */
+	ddi_put8(acc_hdl, &frame->ChainOffset,
+	    (sizeof (MPI2_SCSI_IO_REQUEST) -
+	    sizeof (MPI2_SGE_IO_UNION) +
+	    (j - 1) * sizeof (MPI2_IEEE_SGE_SIMPLE64)) >> 4);
+	ieeesgechain = (pMpi25IeeeSgeChain64_t)ieeesge;
+	chainflags = (MPI2_IEEE_SGE_FLAGS_CHAIN_ELEMENT |
+	    MPI2_IEEE_SGE_FLAGS_SYSTEM_ADDR);
+	ddi_put8(acc_hdl, &ieeesgechain->Flags, chainflags);
+
+	/*
+	 * The size of the next frame is the accurate size of space
+	 * (in bytes) used to store the SGL elements. j is the counter
+	 * of SGL elements. (j - 1) is the number of SGL elements that
+	 * have been processed (stored in frames).
+	 */
+	if (frames >= 2) {
+		ASSERT(mpt->m_req_frame_size >=
+		    sizeof (MPI2_IEEE_SGE_SIMPLE64));
+		chainlength = mpt->m_req_frame_size /
+		    sizeof (MPI2_IEEE_SGE_SIMPLE64) *
+		    sizeof (MPI2_IEEE_SGE_SIMPLE64);
+	} else {
+		chainlength = ((cookiec - (j - 1)) *
+		    sizeof (MPI2_IEEE_SGE_SIMPLE64));
+	}
+
+	p = cmd->cmd_extra_frames;
+
+	ddi_put32(acc_hdl, &ieeesgechain->Length, chainlength);
+	ddi_put32(acc_hdl, &ieeesgechain->Address.Low,
+	    p->m_phys_addr);
+	/* SGL is allocated in the first 4G mem range */
+	ddi_put32(acc_hdl, &ieeesgechain->Address.High, 0);
+
+	/*
+	 * If there are more than 2 frames left we have to
+	 * fill in the next chain offset to the location of
+	 * the chain element in the next frame.
+	 * sgemax is the number of simple elements in an extra
+	 * frame. Note that the value NextChainOffset should be
+	 * in double-words (4 bytes).
+	 */
+	if (frames >= 2) {
+		ddi_put8(acc_hdl, &ieeesgechain->NextChainOffset,
+		    (sgemax * sizeof (MPI2_IEEE_SGE_SIMPLE64)) >> 4);
+	} else {
+		ddi_put8(acc_hdl, &ieeesgechain->NextChainOffset, 0);
+	}
+
+	/*
+	 * Jump to next frame;
+	 * Starting here, chain buffers go into the per command SGL.
+	 * This buffer is allocated when chain buffers are needed.
+	 */
+	ieeesge = (pMpi2IeeeSgeSimple64_t)p->m_frames_addr;
+	i = cookiec;
+
+	/*
+	 * Start filling in frames with SGE's.  If we
+	 * reach the end of frame and still have SGE's
+	 * to fill we need to add a chain element and
+	 * use another frame.  j will be our counter
+	 * for what cookie we are at and i will be
+	 * the total cookiec. k is the current frame
+	 */
+	for (k = 1; k <= frames; k++) {
+		for (l = 1; (l <= (sgemax + 1)) && (j <= i); j++, l++) {
+
+			/*
+			 * If we have reached the end of frame
+			 * and we have more SGE's to fill in
+			 * we have to fill the final entry
+			 * with a chain element and then
+			 * continue to the next frame
+			 */
+			if ((l == (sgemax + 1)) && (k != frames)) {
+				ieeesgechain = (pMpi25IeeeSgeChain64_t)ieeesge;
+				j--;
+				chainflags =
+				    MPI2_IEEE_SGE_FLAGS_CHAIN_ELEMENT |
+				    MPI2_IEEE_SGE_FLAGS_SYSTEM_ADDR;
+				ddi_put8(p->m_acc_hdl,
+				    &ieeesgechain->Flags, chainflags);
+				/*
+				 * k is the frame counter and (k + 1)
+				 * is the number of the next frame.
+				 * Note that frames are in contiguous
+				 * memory space.
+				 */
+				ddi_put32(p->m_acc_hdl,
+				    &ieeesgechain->Address.Low,
+				    (p->m_phys_addr +
+				    (mpt->m_req_frame_size * k)));
+				ddi_put32(p->m_acc_hdl,
+				    &ieeesgechain->Address.High, 0);
+
+				/*
+				 * If there are more than 2 frames left
+				 * we have to next chain offset to
+				 * the location of the chain element
+				 * in the next frame and fill in the
+				 * length of the next chain
+				 */
+				if ((frames - k) >= 2) {
+					ddi_put8(p->m_acc_hdl,
+					    &ieeesgechain->NextChainOffset,
+					    (sgemax *
+					    sizeof (MPI2_IEEE_SGE_SIMPLE64))
+					    >> 4);
+					ASSERT(mpt->m_req_frame_size >=
+					    sizeof (MPI2_IEEE_SGE_SIMPLE64));
+					ddi_put32(p->m_acc_hdl,
+					    &ieeesgechain->Length,
+					    mpt->m_req_frame_size /
+					    sizeof (MPI2_IEEE_SGE_SIMPLE64) *
+					    sizeof (MPI2_IEEE_SGE_SIMPLE64));
+				} else {
+					/*
+					 * This is the last frame. Set
+					 * the NextChainOffset to 0 and
+					 * Length is the total size of
+					 * all remaining simple elements
+					 */
+					ddi_put8(p->m_acc_hdl,
+					    &ieeesgechain->NextChainOffset,
+					    0);
+					ddi_put32(p->m_acc_hdl,
+					    &ieeesgechain->Length,
+					    (cookiec - j) *
+					    sizeof (MPI2_IEEE_SGE_SIMPLE64));
+				}
+
+				/* Jump to the next frame */
+				ieeesge = (pMpi2IeeeSgeSimple64_t)
+				    ((char *)p->m_frames_addr +
+				    (int)mpt->m_req_frame_size * k);
+
+				continue;
+			}
+
+			ddi_put32(p->m_acc_hdl,
+			    &ieeesge->Address.Low,
+			    dmap->addr.address64.Low);
+			ddi_put32(p->m_acc_hdl,
+			    &ieeesge->Address.High,
+			    dmap->addr.address64.High);
+			ddi_put32(p->m_acc_hdl,
+			    &ieeesge->Length, dmap->count);
+			flags = (MPI2_IEEE_SGE_FLAGS_SIMPLE_ELEMENT |
+			    MPI2_IEEE_SGE_FLAGS_SYSTEM_ADDR);
+
+			/*
+			 * If we are at the end of the frame and
+			 * there is another frame to fill in
+			 * do we need to do anything?
+			 * if ((l == sgemax) && (k != frames)) {
+			 * }
+			 */
+
+			/*
+			 * If this is the final cookie set end of list.
+			 */
+			if (j == i) {
+				flags |= MPI25_IEEE_SGE_FLAGS_END_OF_LIST;
+			}
+
+			ddi_put8(p->m_acc_hdl, &ieeesge->Flags, flags);
+			dmap++;
+			ieeesge++;
+		}
+	}
+
+	/*
+	 * Sync DMA with the chain buffers that were just created
+	 */
+	(void) ddi_dma_sync(p->m_dma_hdl, 0, 0, DDI_DMA_SYNC_FORDEV);
+}
+
+static void
+mptsas_sge_setup(mptsas_t *mpt, mptsas_cmd_t *cmd, uint32_t *control,
+    pMpi2SCSIIORequest_t frame, ddi_acc_handle_t acc_hdl)
+{
+	ASSERT(cmd->cmd_flags & CFLAG_DMAVALID);
+
+	NDBG1(("mptsas_sge_setup: cookiec=%d", cmd->cmd_cookiec));
 
 	/*
 	 * Set read/write bit in control.
@@ -4208,362 +4872,34 @@ mptsas_sge_setup(mptsas_t *mpt, mptsas_cmd_t *cmd, uint32_t *control,
 	ddi_put32(acc_hdl, &frame->DataLength, cmd->cmd_dmacount);
 
 	/*
-	 * We have 2 cases here.  First where we can fit all the
+	 * We have 4 cases here.  First where we can fit all the
 	 * SG elements into the main frame, and the case
-	 * where we can't.
+	 * where we can't. The SG element is also different when using
+	 * MPI2.5 interface.
 	 * If we have more cookies than we can attach to a frame
 	 * we will need to use a chain element to point
 	 * a location of memory where the rest of the S/G
 	 * elements reside.
 	 */
-	if (cookiec <= MPTSAS_MAX_FRAME_SGES64(mpt)) {
-		dmap = cmd->cmd_sg;
-		sge = (pMpi2SGESimple64_t)(&frame->SGL);
-		while (cookiec--) {
-			ddi_put32(acc_hdl,
-			    &sge->Address.Low, dmap->addr.address64.Low);
-			ddi_put32(acc_hdl,
-			    &sge->Address.High, dmap->addr.address64.High);
-			ddi_put32(acc_hdl, &sge->FlagsLength,
-			    dmap->count);
-			flags = ddi_get32(acc_hdl, &sge->FlagsLength);
-			flags |= ((uint32_t)
-			    (MPI2_SGE_FLAGS_SIMPLE_ELEMENT |
-			    MPI2_SGE_FLAGS_SYSTEM_ADDRESS |
-			    MPI2_SGE_FLAGS_64_BIT_ADDRESSING) <<
-			    MPI2_SGE_FLAGS_SHIFT);
-
-			/*
-			 * If this is the last cookie, we set the flags
-			 * to indicate so
-			 */
-			if (cookiec == 0) {
-				flags |=
-				    ((uint32_t)(MPI2_SGE_FLAGS_LAST_ELEMENT
-				    | MPI2_SGE_FLAGS_END_OF_BUFFER
-				    | MPI2_SGE_FLAGS_END_OF_LIST) <<
-				    MPI2_SGE_FLAGS_SHIFT);
-			}
-			if (cmd->cmd_flags & CFLAG_DMASEND) {
-				flags |= (MPI2_SGE_FLAGS_HOST_TO_IOC <<
-				    MPI2_SGE_FLAGS_SHIFT);
-			} else {
-				flags |= (MPI2_SGE_FLAGS_IOC_TO_HOST <<
-				    MPI2_SGE_FLAGS_SHIFT);
-			}
-			ddi_put32(acc_hdl, &sge->FlagsLength, flags);
-			dmap++;
-			sge++;
+	if (cmd->cmd_cookiec <= MPTSAS_MAX_FRAME_SGES64(mpt)) {
+		if (mpt->m_MPI25) {
+			mptsas_ieee_sge_mainframe(cmd, frame, acc_hdl,
+			    cmd->cmd_cookiec,
+			    MPI25_IEEE_SGE_FLAGS_END_OF_LIST);
+		} else {
+			mptsas_sge_mainframe(cmd, frame, acc_hdl,
+			    cmd->cmd_cookiec,
+			    ((uint32_t)(MPI2_SGE_FLAGS_LAST_ELEMENT
+			    | MPI2_SGE_FLAGS_END_OF_BUFFER
+			    | MPI2_SGE_FLAGS_END_OF_LIST) <<
+			    MPI2_SGE_FLAGS_SHIFT));
 		}
 	} else {
-		/*
-		 * Hereby we start to deal with multiple frames.
-		 * The process is as follows:
-		 * 1. Determine how many frames are needed for SGL element
-		 *    storage; Note that all frames are stored in contiguous
-		 *    memory space and in 64-bit DMA mode each element is
-		 *    3 double-words (12 bytes) long.
-		 * 2. Fill up the main frame. We need to do this separately
-		 *    since it contains the SCSI IO request header and needs
-		 *    dedicated processing. Note that the last 4 double-words
-		 *    of the SCSI IO header is for SGL element storage
-		 *    (MPI2_SGE_IO_UNION).
-		 * 3. Fill the chain element in the main frame, so the DMA
-		 *    engine can use the following frames.
-		 * 4. Enter a loop to fill the remaining frames. Note that the
-		 *    last frame contains no chain element.  The remaining
-		 *    frames go into the mpt SGL buffer allocated on the fly,
-		 *    not immediately following the main message frame, as in
-		 *    Gen1.
-		 * Some restrictions:
-		 * 1. For 64-bit DMA, the simple element and chain element
-		 *    are both of 3 double-words (12 bytes) in size, even
-		 *    though all frames are stored in the first 4G of mem
-		 *    range and the higher 32-bits of the address are always 0.
-		 * 2. On some controllers (like the 1064/1068), a frame can
-		 *    hold SGL elements with the last 1 or 2 double-words
-		 *    (4 or 8 bytes) un-used. On these controllers, we should
-		 *    recognize that there's not enough room for another SGL
-		 *    element and move the sge pointer to the next frame.
-		 */
-		int		i, j, k, l, frames, sgemax;
-		int		temp;
-		uint8_t		chainflags;
-		uint16_t	chainlength;
-		mptsas_cache_frames_t *p;
-
-		/*
-		 * Sgemax is the number of SGE's that will fit
-		 * each extra frame and frames is total
-		 * number of frames we'll need.  1 sge entry per
-		 * frame is reseverd for the chain element thus the -1 below.
-		 */
-		sgemax = ((mpt->m_req_frame_size / sizeof (MPI2_SGE_SIMPLE64))
-		    - 1);
-		temp = (cookiec - (MPTSAS_MAX_FRAME_SGES64(mpt) - 1)) / sgemax;
-
-		/*
-		 * A little check to see if we need to round up the number
-		 * of frames we need
-		 */
-		if ((cookiec - (MPTSAS_MAX_FRAME_SGES64(mpt) - 1)) - (temp *
-		    sgemax) > 1) {
-			frames = (temp + 1);
+		if (mpt->m_MPI25) {
+			mptsas_ieee_sge_chain(mpt, cmd, frame, acc_hdl);
 		} else {
-			frames = temp;
+			mptsas_sge_chain(mpt, cmd, frame, acc_hdl);
 		}
-		dmap = cmd->cmd_sg;
-		sge = (pMpi2SGESimple64_t)(&frame->SGL);
-
-		/*
-		 * First fill in the main frame
-		 */
-		for (j = 1; j < MPTSAS_MAX_FRAME_SGES64(mpt); j++) {
-			ddi_put32(acc_hdl, &sge->Address.Low,
-			    dmap->addr.address64.Low);
-			ddi_put32(acc_hdl, &sge->Address.High,
-			    dmap->addr.address64.High);
-			ddi_put32(acc_hdl, &sge->FlagsLength, dmap->count);
-			flags = ddi_get32(acc_hdl, &sge->FlagsLength);
-			flags |= ((uint32_t)(MPI2_SGE_FLAGS_SIMPLE_ELEMENT |
-			    MPI2_SGE_FLAGS_SYSTEM_ADDRESS |
-			    MPI2_SGE_FLAGS_64_BIT_ADDRESSING) <<
-			    MPI2_SGE_FLAGS_SHIFT);
-
-			/*
-			 * If this is the last SGE of this frame
-			 * we set the end of list flag
-			 */
-			if (j == (MPTSAS_MAX_FRAME_SGES64(mpt) - 1)) {
-				flags |= ((uint32_t)
-				    (MPI2_SGE_FLAGS_LAST_ELEMENT) <<
-				    MPI2_SGE_FLAGS_SHIFT);
-			}
-			if (cmd->cmd_flags & CFLAG_DMASEND) {
-				flags |=
-				    (MPI2_SGE_FLAGS_HOST_TO_IOC <<
-				    MPI2_SGE_FLAGS_SHIFT);
-			} else {
-				flags |=
-				    (MPI2_SGE_FLAGS_IOC_TO_HOST <<
-				    MPI2_SGE_FLAGS_SHIFT);
-			}
-			ddi_put32(acc_hdl, &sge->FlagsLength, flags);
-			dmap++;
-			sge++;
-		}
-
-		/*
-		 * Fill in the chain element in the main frame.
-		 * About calculation on ChainOffset:
-		 * 1. Struct msg_scsi_io_request has 4 double-words (16 bytes)
-		 *    in the end reserved for SGL element storage
-		 *    (MPI2_SGE_IO_UNION); we should count it in our
-		 *    calculation.  See its definition in the header file.
-		 * 2. Constant j is the counter of the current SGL element
-		 *    that will be processed, and (j - 1) is the number of
-		 *    SGL elements that have been processed (stored in the
-		 *    main frame).
-		 * 3. ChainOffset value should be in units of double-words (4
-		 *    bytes) so the last value should be divided by 4.
-		 */
-		ddi_put8(acc_hdl, &frame->ChainOffset,
-		    (sizeof (MPI2_SCSI_IO_REQUEST) -
-		    sizeof (MPI2_SGE_IO_UNION) +
-		    (j - 1) * sizeof (MPI2_SGE_SIMPLE64)) >> 2);
-		sgechain = (pMpi2SGEChain64_t)sge;
-		chainflags = (MPI2_SGE_FLAGS_CHAIN_ELEMENT |
-		    MPI2_SGE_FLAGS_SYSTEM_ADDRESS |
-		    MPI2_SGE_FLAGS_64_BIT_ADDRESSING);
-		ddi_put8(acc_hdl, &sgechain->Flags, chainflags);
-
-		/*
-		 * The size of the next frame is the accurate size of space
-		 * (in bytes) used to store the SGL elements. j is the counter
-		 * of SGL elements. (j - 1) is the number of SGL elements that
-		 * have been processed (stored in frames).
-		 */
-		if (frames >= 2) {
-			chainlength = mpt->m_req_frame_size /
-			    sizeof (MPI2_SGE_SIMPLE64) *
-			    sizeof (MPI2_SGE_SIMPLE64);
-		} else {
-			chainlength = ((cookiec - (j - 1)) *
-			    sizeof (MPI2_SGE_SIMPLE64));
-		}
-
-		p = cmd->cmd_extra_frames;
-
-		ddi_put16(acc_hdl, &sgechain->Length, chainlength);
-		ddi_put32(acc_hdl, &sgechain->Address.Low,
-		    p->m_phys_addr);
-		/* SGL is allocated in the first 4G mem range */
-		ddi_put32(acc_hdl, &sgechain->Address.High, 0);
-
-		/*
-		 * If there are more than 2 frames left we have to
-		 * fill in the next chain offset to the location of
-		 * the chain element in the next frame.
-		 * sgemax is the number of simple elements in an extra
-		 * frame. Note that the value NextChainOffset should be
-		 * in double-words (4 bytes).
-		 */
-		if (frames >= 2) {
-			ddi_put8(acc_hdl, &sgechain->NextChainOffset,
-			    (sgemax * sizeof (MPI2_SGE_SIMPLE64)) >> 2);
-		} else {
-			ddi_put8(acc_hdl, &sgechain->NextChainOffset, 0);
-		}
-
-		/*
-		 * Jump to next frame;
-		 * Starting here, chain buffers go into the per command SGL.
-		 * This buffer is allocated when chain buffers are needed.
-		 */
-		sge = (pMpi2SGESimple64_t)p->m_frames_addr;
-		i = cookiec;
-
-		/*
-		 * Start filling in frames with SGE's.  If we
-		 * reach the end of frame and still have SGE's
-		 * to fill we need to add a chain element and
-		 * use another frame.  j will be our counter
-		 * for what cookie we are at and i will be
-		 * the total cookiec. k is the current frame
-		 */
-		for (k = 1; k <= frames; k++) {
-			for (l = 1; (l <= (sgemax + 1)) && (j <= i); j++, l++) {
-
-				/*
-				 * If we have reached the end of frame
-				 * and we have more SGE's to fill in
-				 * we have to fill the final entry
-				 * with a chain element and then
-				 * continue to the next frame
-				 */
-				if ((l == (sgemax + 1)) && (k != frames)) {
-					sgechain = (pMpi2SGEChain64_t)sge;
-					j--;
-					chainflags = (
-					    MPI2_SGE_FLAGS_CHAIN_ELEMENT |
-					    MPI2_SGE_FLAGS_SYSTEM_ADDRESS |
-					    MPI2_SGE_FLAGS_64_BIT_ADDRESSING);
-					ddi_put8(p->m_acc_hdl,
-					    &sgechain->Flags, chainflags);
-					/*
-					 * k is the frame counter and (k + 1)
-					 * is the number of the next frame.
-					 * Note that frames are in contiguous
-					 * memory space.
-					 */
-					ddi_put32(p->m_acc_hdl,
-					    &sgechain->Address.Low,
-					    (p->m_phys_addr +
-					    (mpt->m_req_frame_size * k)));
-					ddi_put32(p->m_acc_hdl,
-					    &sgechain->Address.High, 0);
-
-					/*
-					 * If there are more than 2 frames left
-					 * we have to next chain offset to
-					 * the location of the chain element
-					 * in the next frame and fill in the
-					 * length of the next chain
-					 */
-					if ((frames - k) >= 2) {
-						ddi_put8(p->m_acc_hdl,
-						    &sgechain->NextChainOffset,
-						    (sgemax *
-						    sizeof (MPI2_SGE_SIMPLE64))
-						    >> 2);
-						ddi_put16(p->m_acc_hdl,
-						    &sgechain->Length,
-						    mpt->m_req_frame_size /
-						    sizeof (MPI2_SGE_SIMPLE64) *
-						    sizeof (MPI2_SGE_SIMPLE64));
-					} else {
-						/*
-						 * This is the last frame. Set
-						 * the NextChainOffset to 0 and
-						 * Length is the total size of
-						 * all remaining simple elements
-						 */
-						ddi_put8(p->m_acc_hdl,
-						    &sgechain->NextChainOffset,
-						    0);
-						ddi_put16(p->m_acc_hdl,
-						    &sgechain->Length,
-						    (cookiec - j) *
-						    sizeof (MPI2_SGE_SIMPLE64));
-					}
-
-					/* Jump to the next frame */
-					sge = (pMpi2SGESimple64_t)
-					    ((char *)p->m_frames_addr +
-					    (int)mpt->m_req_frame_size * k);
-
-					continue;
-				}
-
-				ddi_put32(p->m_acc_hdl,
-				    &sge->Address.Low,
-				    dmap->addr.address64.Low);
-				ddi_put32(p->m_acc_hdl,
-				    &sge->Address.High,
-				    dmap->addr.address64.High);
-				ddi_put32(p->m_acc_hdl,
-				    &sge->FlagsLength, dmap->count);
-				flags = ddi_get32(p->m_acc_hdl,
-				    &sge->FlagsLength);
-				flags |= ((uint32_t)(
-				    MPI2_SGE_FLAGS_SIMPLE_ELEMENT |
-				    MPI2_SGE_FLAGS_SYSTEM_ADDRESS |
-				    MPI2_SGE_FLAGS_64_BIT_ADDRESSING) <<
-				    MPI2_SGE_FLAGS_SHIFT);
-
-				/*
-				 * If we are at the end of the frame and
-				 * there is another frame to fill in
-				 * we set the last simple element as last
-				 * element
-				 */
-				if ((l == sgemax) && (k != frames)) {
-					flags |= ((uint32_t)
-					    (MPI2_SGE_FLAGS_LAST_ELEMENT) <<
-					    MPI2_SGE_FLAGS_SHIFT);
-				}
-
-				/*
-				 * If this is the final cookie we
-				 * indicate it by setting the flags
-				 */
-				if (j == i) {
-					flags |= ((uint32_t)
-					    (MPI2_SGE_FLAGS_LAST_ELEMENT |
-					    MPI2_SGE_FLAGS_END_OF_BUFFER |
-					    MPI2_SGE_FLAGS_END_OF_LIST) <<
-					    MPI2_SGE_FLAGS_SHIFT);
-				}
-				if (cmd->cmd_flags & CFLAG_DMASEND) {
-					flags |=
-					    (MPI2_SGE_FLAGS_HOST_TO_IOC <<
-					    MPI2_SGE_FLAGS_SHIFT);
-				} else {
-					flags |=
-					    (MPI2_SGE_FLAGS_IOC_TO_HOST <<
-					    MPI2_SGE_FLAGS_SHIFT);
-				}
-				ddi_put32(p->m_acc_hdl,
-				    &sge->FlagsLength, flags);
-				dmap++;
-				sge++;
-			}
-		}
-
-		/*
-		 * Sync DMA with the chain buffers that were just created
-		 */
-		(void) ddi_dma_sync(p->m_dma_hdl, 0, 0, DDI_DMA_SYNC_FORDEV);
 	}
 }
 
@@ -4847,9 +5183,8 @@ mptsas_handle_address_reply(mptsas_t *mpt,
 			    "reply in slot %d", SMID);
 			return;
 		}
-		if ((cmd->cmd_flags & CFLAG_PASSTHRU) ||
-		    (cmd->cmd_flags & CFLAG_CONFIG) ||
-		    (cmd->cmd_flags & CFLAG_FW_DIAG)) {
+		if ((cmd->cmd_flags &
+		    (CFLAG_PASSTHRU | CFLAG_CONFIG | CFLAG_FW_DIAG))) {
 			cmd->cmd_rfm = reply_addr;
 			cmd->cmd_flags |= CFLAG_FINISHED;
 			cv_broadcast(&mpt->m_passthru_cv);
@@ -5016,6 +5351,9 @@ mptsas_check_scsi_io_error(mptsas_t *mpt, pMpi2SCSIIOReply_t reply,
 	struct buf		*bp;
 	mptsas_target_t		*ptgt = cmd->cmd_tgt_addr;
 	uint8_t			*sensedata = NULL;
+	uint64_t		sas_wwn;
+	uint8_t			phy;
+	char			wwn_str[MPTSAS_WWN_STRLEN];
 
 	if ((cmd->cmd_flags & (CFLAG_SCBEXTERN | CFLAG_EXTARQBUFVALID)) ==
 	    (CFLAG_SCBEXTERN | CFLAG_EXTARQBUFVALID)) {
@@ -5033,12 +5371,19 @@ mptsas_check_scsi_io_error(mptsas_t *mpt, pMpi2SCSIIOReply_t reply,
 	    &reply->ResponseInfo);
 
 	if (ioc_status & MPI2_IOCSTATUS_FLAG_LOG_INFO_AVAILABLE) {
+		sas_wwn = ptgt->m_addr.mta_wwn;
+		phy = ptgt->m_phynum;
+		if (sas_wwn == 0) {
+			(void) sprintf(wwn_str, "p%x", phy);
+		} else {
+			(void) sprintf(wwn_str, "w%016"PRIx64, sas_wwn);
+		}
 		loginfo = ddi_get32(mpt->m_acc_reply_frame_hdl,
 		    &reply->IOCLogInfo);
 		mptsas_log(mpt, CE_NOTE,
-		    "?Log info 0x%x received for target %d.\n"
+		    "?Log info 0x%x received for target %d %s.\n"
 		    "\tscsi_status=0x%x, ioc_status=0x%x, scsi_state=0x%x",
-		    loginfo, Tgt(cmd), scsi_status, ioc_status,
+		    loginfo, Tgt(cmd), wwn_str, scsi_status, ioc_status,
 		    scsi_state);
 	}
 
@@ -5155,6 +5500,8 @@ mptsas_check_scsi_io_error(mptsas_t *mpt, pMpi2SCSIIOReply_t reply,
 			    mptsas_handle_dr,
 			    (void *)topo_node,
 			    DDI_NOSLEEP)) != DDI_SUCCESS) {
+				kmem_free(topo_node,
+				    sizeof (mptsas_topo_change_list_t));
 				mptsas_log(mpt, CE_NOTE, "mptsas start taskq"
 				    "for handle SAS dynamic reconfigure"
 				    "failed. \n");
@@ -5193,8 +5540,18 @@ mptsas_check_scsi_io_error(mptsas_t *mpt, pMpi2SCSIIOReply_t reply,
 			}
 			break;
 		case MPI2_IOCSTATUS_SCSI_TASK_TERMINATED:
-			mptsas_set_pkt_reason(mpt,
-			    cmd, CMD_RESET, STAT_BUS_RESET);
+			if (cmd->cmd_active_expiration <= gethrtime()) {
+				/*
+				 * When timeout requested, propagate
+				 * proper reason and statistics to
+				 * target drivers.
+				 */
+				mptsas_set_pkt_reason(mpt, cmd, CMD_TIMEOUT,
+				    STAT_BUS_RESET | STAT_TIMEOUT);
+			} else {
+				mptsas_set_pkt_reason(mpt, cmd, CMD_RESET,
+				    STAT_BUS_RESET);
+			}
 			break;
 		case MPI2_IOCSTATUS_SCSI_IOC_TERMINATED:
 		case MPI2_IOCSTATUS_SCSI_EXT_TERMINATED:
@@ -5472,7 +5829,8 @@ mptsas_process_intr(mptsas_t *mpt,
 	reply_type = ddi_get8(mpt->m_acc_post_queue_hdl,
 	    &reply_desc_union->Default.ReplyFlags);
 	reply_type &= MPI2_RPY_DESCRIPT_FLAGS_TYPE_MASK;
-	if (reply_type == MPI2_RPY_DESCRIPT_FLAGS_SCSI_IO_SUCCESS) {
+	if (reply_type == MPI2_RPY_DESCRIPT_FLAGS_SCSI_IO_SUCCESS ||
+	    reply_type == MPI25_RPY_DESCRIPT_FLAGS_FAST_PATH_SCSI_IO_SUCCESS) {
 		mptsas_handle_scsi_io_success(mpt, reply_desc_union);
 	} else if (reply_type == MPI2_RPY_DESCRIPT_FLAGS_ADDRESS_REPLY) {
 		mptsas_handle_address_reply(mpt, reply_desc_union);
@@ -6597,6 +6955,10 @@ mptsas_handle_event_sync(void *args)
 					(void) sprintf(curr, "is online at 6.0 "
 					    "Gbps");
 					break;
+				case MPI25_EVENT_SAS_TOPO_LR_RATE_12_0:
+					(void) sprintf(curr,
+					    "is online at 12.0 Gbps");
+					break;
 				default:
 					(void) sprintf(curr, "state is "
 					    "unknown");
@@ -6800,6 +7162,18 @@ mptsas_handle_event_sync(void *args)
 					    SAS_PHY_ONLINE,
 					    &mpt->m_phy_info[i].smhba_info);
 					break;
+				case MPI25_EVENT_SAS_TOPO_LR_RATE_12_0:
+					(void) sprintf(curr, "is online at "
+					    "12.0 Gbps");
+					if ((expd_handle == 0) &&
+					    (enc_handle == 1)) {
+						mpt->m_port_chng = 1;
+					}
+					mptsas_smhba_log_sysevent(mpt,
+					    ESC_SAS_PHY_EVENT,
+					    SAS_PHY_ONLINE,
+					    &mpt->m_phy_info[i].smhba_info);
+					break;
 				default:
 					(void) sprintf(curr, "state is "
 					    "unknown");
@@ -6837,6 +7211,10 @@ mptsas_handle_event_sync(void *args)
 					(void) sprintf(prev, ", was online at "
 					    "6.0 Gbps");
 					break;
+				case MPI25_EVENT_SAS_TOPO_LR_RATE_12_0:
+					(void) sprintf(prev, ", was online at "
+					    "12.0 Gbps");
+					break;
 				default:
 				break;
 				}
@@ -6862,6 +7240,12 @@ mptsas_handle_event_sync(void *args)
 			if ((ddi_taskq_dispatch(mpt->m_dr_taskq,
 			    mptsas_handle_dr, (void *)topo_head,
 			    DDI_NOSLEEP)) != DDI_SUCCESS) {
+				while (topo_head != NULL) {
+					topo_node = topo_head;
+					topo_head = topo_head->next;
+					kmem_free(topo_node,
+					    sizeof (mptsas_topo_change_list_t));
+				}
 				mptsas_log(mpt, CE_NOTE, "mptsas start taskq "
 				    "for handle SAS DR event failed. \n");
 			}
@@ -7040,6 +7424,12 @@ mptsas_handle_event_sync(void *args)
 			if ((ddi_taskq_dispatch(mpt->m_dr_taskq,
 			    mptsas_handle_dr, (void *)topo_head,
 			    DDI_NOSLEEP)) != DDI_SUCCESS) {
+				while (topo_head != NULL) {
+					topo_node = topo_head;
+					topo_head = topo_head->next;
+					kmem_free(topo_node,
+					    sizeof (mptsas_topo_change_list_t));
+				}
 				mptsas_log(mpt, CE_NOTE, "mptsas start taskq "
 				    "for handle SAS DR event failed. \n");
 			}
@@ -7654,7 +8044,6 @@ mptsas_remove_cmd(mptsas_t *mpt, mptsas_cmd_t *cmd)
 {
 	int		slot;
 	mptsas_slots_t	*slots = mpt->m_active;
-	int		t;
 	mptsas_target_t	*ptgt = cmd->cmd_tgt_addr;
 
 	ASSERT(cmd != NULL);
@@ -7668,7 +8057,6 @@ mptsas_remove_cmd(mptsas_t *mpt, mptsas_cmd_t *cmd)
 		return;
 	}
 
-	t = Tgt(cmd);
 	slot = cmd->cmd_slot;
 
 	/*
@@ -7693,8 +8081,16 @@ mptsas_remove_cmd(mptsas_t *mpt, mptsas_cmd_t *cmd)
 			    ((cmd->cmd_pkt_flags & FLAG_TAGMASK) == 0)) {
 				mptsas_set_throttle(mpt, ptgt, MAX_THROTTLE);
 			}
-		}
 
+			/*
+			 * Remove this command from the active queue.
+			 */
+			if (cmd->cmd_active_expiration != 0) {
+				TAILQ_REMOVE(&ptgt->m_active_cmdq, cmd,
+				    cmd_active_link);
+				cmd->cmd_active_expiration = 0;
+			}
+		}
 	}
 
 	/*
@@ -7704,50 +8100,6 @@ mptsas_remove_cmd(mptsas_t *mpt, mptsas_cmd_t *cmd)
 		mptsas_return_to_pool(mpt, cmd);
 		return;
 	}
-
-	/*
-	 * Figure out what to set tag Q timeout for...
-	 *
-	 * Optimize: If we have duplicate's of same timeout
-	 * we're using, then we'll use it again until we run
-	 * out of duplicates.  This should be the normal case
-	 * for block and raw I/O.
-	 * If no duplicates, we have to scan through tag que and
-	 * find the longest timeout value and use it.  This is
-	 * going to take a while...
-	 * Add 1 to m_n_normal to account for TM request.
-	 */
-	if (cmd->cmd_pkt->pkt_time == ptgt->m_timebase) {
-		if (--(ptgt->m_dups) == 0) {
-			if (ptgt->m_t_ncmds) {
-				mptsas_cmd_t *ssp;
-				uint_t n = 0;
-				ushort_t nslots = (slots->m_n_normal + 1);
-				ushort_t i;
-				/*
-				 * This crude check assumes we don't do
-				 * this too often which seems reasonable
-				 * for block and raw I/O.
-				 */
-				for (i = 0; i < nslots; i++) {
-					ssp = slots->m_slot[i];
-					if (ssp && (Tgt(ssp) == t) &&
-					    (ssp->cmd_pkt->pkt_time > n)) {
-						n = ssp->cmd_pkt->pkt_time;
-						ptgt->m_dups = 1;
-					} else if (ssp && (Tgt(ssp) == t) &&
-					    (ssp->cmd_pkt->pkt_time == n)) {
-						ptgt->m_dups++;
-					}
-				}
-				ptgt->m_timebase = n;
-			} else {
-				ptgt->m_dups = 0;
-				ptgt->m_timebase = 0;
-			}
-		}
-	}
-	ptgt->m_timeout = ptgt->m_timebase;
 
 	ASSERT(cmd != slots->m_slot[cmd->cmd_slot]);
 }
@@ -7903,7 +8255,6 @@ mptsas_start_cmd(mptsas_t *mpt, mptsas_cmd_t *cmd)
 {
 	struct scsi_pkt		*pkt = CMD2PKT(cmd);
 	uint32_t		control = 0;
-	int			n;
 	caddr_t			mem;
 	pMpi2SCSIIORequest_t	io_request;
 	ddi_dma_handle_t	dma_hdl = mpt->m_dma_req_frame_hdl;
@@ -7911,6 +8262,7 @@ mptsas_start_cmd(mptsas_t *mpt, mptsas_cmd_t *cmd)
 	mptsas_target_t		*ptgt = cmd->cmd_tgt_addr;
 	uint16_t		SMID, io_flags = 0;
 	uint32_t		request_desc_low, request_desc_high;
+	mptsas_cmd_t		*c;
 
 	NDBG1(("mptsas_start_cmd: cmd=0x%p", (void *)cmd));
 
@@ -7996,6 +8348,13 @@ mptsas_start_cmd(mptsas_t *mpt, mptsas_cmd_t *cmd)
 	    io_request->CDB.CDB32, cmd->cmd_cdblen, DDI_DEV_AUTOINCR);
 
 	io_flags = cmd->cmd_cdblen;
+	if (mptsas_use_fastpath &&
+	    ptgt->m_io_flags & MPI25_SAS_DEVICE0_FLAGS_ENABLED_FAST_PATH) {
+		io_flags |= MPI25_SCSIIO_IOFLAGS_FAST_PATH;
+		request_desc_low = MPI25_REQ_DESCRIPT_FLAGS_FAST_PATH_SCSI_IO;
+	} else {
+		request_desc_low = MPI2_REQ_DESCRIPT_FLAGS_SCSI_IO;
+	}
 	ddi_put16(acc_hdl, &io_request->IoFlags, io_flags);
 	/*
 	 * setup the Scatter/Gather DMA list for this request
@@ -8033,44 +8392,51 @@ mptsas_start_cmd(mptsas_t *mpt, mptsas_cmd_t *cmd)
 	/*
 	 * Build request descriptor and write it to the request desc post reg.
 	 */
-	request_desc_low = (SMID << 16) + MPI2_REQ_DESCRIPT_FLAGS_SCSI_IO;
+	request_desc_low |= (SMID << 16);
 	request_desc_high = ptgt->m_devhdl << 16;
 	MPTSAS_START_CMD(mpt, request_desc_low, request_desc_high);
 
 	/*
 	 * Start timeout.
 	 */
+	cmd->cmd_active_expiration =
+	    gethrtime() + (hrtime_t)pkt->pkt_time * NANOSEC;
 #ifdef MPTSAS_TEST
 	/*
-	 * Temporarily set timebase = 0;  needed for
-	 * timeout torture test.
+	 * Force timeouts to happen immediately.
 	 */
-	if (mptsas_test_timeouts) {
-		ptgt->m_timebase = 0;
-	}
+	if (mptsas_test_timeouts)
+		cmd->cmd_active_expiration = gethrtime();
 #endif
-	n = pkt->pkt_time - ptgt->m_timebase;
-
-	if (n == 0) {
-		(ptgt->m_dups)++;
-		ptgt->m_timeout = ptgt->m_timebase;
-	} else if (n > 0) {
-		ptgt->m_timeout =
-		    ptgt->m_timebase = pkt->pkt_time;
-		ptgt->m_dups = 1;
-	} else if (n < 0) {
-		ptgt->m_timeout = ptgt->m_timebase;
+	c = TAILQ_FIRST(&ptgt->m_active_cmdq);
+	if (c == NULL ||
+	    c->cmd_active_expiration < cmd->cmd_active_expiration) {
+		/*
+		 * Common case is that this is the last pending expiration
+		 * (or queue is empty). Insert at head of the queue.
+		 */
+		TAILQ_INSERT_HEAD(&ptgt->m_active_cmdq, cmd, cmd_active_link);
+	} else {
+		/*
+		 * Queue is not empty and first element expires later than
+		 * this command. Search for element expiring sooner.
+		 */
+		while ((c = TAILQ_NEXT(c, cmd_active_link)) != NULL) {
+			if (c->cmd_active_expiration <
+			    cmd->cmd_active_expiration) {
+				TAILQ_INSERT_BEFORE(c, cmd, cmd_active_link);
+				break;
+			}
+		}
+		if (c == NULL) {
+			/*
+			 * No element found expiring sooner, append to
+			 * non-empty queue.
+			 */
+			TAILQ_INSERT_TAIL(&ptgt->m_active_cmdq, cmd,
+			    cmd_active_link);
+		}
 	}
-#ifdef MPTSAS_TEST
-	/*
-	 * Set back to a number higher than
-	 * mptsas_scsi_watchdog_tick
-	 * so timeouts will happen in mptsas_watchsubr
-	 */
-	if (mptsas_test_timeouts) {
-		ptgt->m_timebase = 60;
-	}
-#endif
 
 	if ((mptsas_check_dma_handle(dma_hdl) != DDI_SUCCESS) ||
 	    (mptsas_check_acc_handle(acc_hdl) != DDI_SUCCESS)) {
@@ -8584,8 +8950,11 @@ mptsas_flush_target(mptsas_t *mpt, ushort_t target, int lun, uint8_t tasktype)
 	int		slot;
 	uchar_t		reason;
 	uint_t		stat;
+	hrtime_t	timestamp;
 
 	NDBG25(("mptsas_flush_target: target=%d lun=%d", target, lun));
+
+	timestamp = gethrtime();
 
 	/*
 	 * Make sure the I/O Controller has flushed all cmds
@@ -8601,6 +8970,15 @@ mptsas_flush_target(mptsas_t *mpt, ushort_t target, int lun, uint8_t tasktype)
 		switch (tasktype) {
 		case MPI2_SCSITASKMGMT_TASKTYPE_TARGET_RESET:
 			if (Tgt(cmd) == target) {
+				if (cmd->cmd_active_expiration <= timestamp) {
+					/*
+					 * When timeout requested, propagate
+					 * proper reason and statistics to
+					 * target drivers.
+					 */
+					reason = CMD_TIMEOUT;
+					stat |= STAT_TIMEOUT;
+				}
 				NDBG25(("mptsas_flush_target discovered non-"
 				    "NULL cmd in slot %d, tasktype 0x%x", slot,
 				    tasktype));
@@ -8740,9 +9118,8 @@ mptsas_flush_hba(mptsas_t *mpt)
 			 */
 			mptsas_set_pkt_reason(mpt, cmd, CMD_RESET,
 			    STAT_BUS_RESET);
-			if ((cmd->cmd_flags & CFLAG_PASSTHRU) ||
-			    (cmd->cmd_flags & CFLAG_CONFIG) ||
-			    (cmd->cmd_flags & CFLAG_FW_DIAG)) {
+			if ((cmd->cmd_flags &
+			    (CFLAG_PASSTHRU | CFLAG_CONFIG | CFLAG_FW_DIAG))) {
 				cmd->cmd_flags |= CFLAG_FINISHED;
 				cv_broadcast(&mpt->m_passthru_cv);
 				cv_broadcast(&mpt->m_config_cv);
@@ -9306,7 +9683,7 @@ mptsas_printf(char *fmt, ...)
 #ifdef PROM_PRINTF
 	prom_printf("%s:\t%s\n", mptsas_label, mptsas_log_buf);
 #else
-	scsi_log(dev, mptsas_label, SCSI_DEBUG, "%s\n", mptsas_log_buf);
+	scsi_log(dev, mptsas_label, CE_CONT, "!%s\n", mptsas_log_buf);
 #endif
 	mutex_exit(&mptsas_log_mutex);
 }
@@ -9384,6 +9761,7 @@ mptsas_watchsubr(mptsas_t *mpt)
 	int		i;
 	mptsas_cmd_t	*cmd;
 	mptsas_target_t	*ptgt = NULL;
+	hrtime_t	timestamp = gethrtime();
 
 	ASSERT(MUTEX_HELD(&mpt->m_mutex));
 
@@ -9401,10 +9779,8 @@ mptsas_watchsubr(mptsas_t *mpt)
 	 */
 	for (i = 0; i <= mpt->m_active->m_n_normal; i++) {
 		if ((cmd = mpt->m_active->m_slot[i]) != NULL) {
-			if ((cmd->cmd_flags & CFLAG_CMDIOC) == 0) {
-				cmd->cmd_active_timeout -=
-				    mptsas_scsi_watchdog_tick;
-				if (cmd->cmd_active_timeout <= 0) {
+			if (cmd->cmd_active_expiration <= timestamp) {
+				if ((cmd->cmd_flags & CFLAG_CMDIOC) == 0) {
 					/*
 					 * There seems to be a command stuck
 					 * in the active slot.  Drain throttle.
@@ -9412,14 +9788,9 @@ mptsas_watchsubr(mptsas_t *mpt)
 					mptsas_set_throttle(mpt,
 					    cmd->cmd_tgt_addr,
 					    DRAIN_THROTTLE);
-				}
-			}
-			if ((cmd->cmd_flags & CFLAG_PASSTHRU) ||
-			    (cmd->cmd_flags & CFLAG_CONFIG) ||
-			    (cmd->cmd_flags & CFLAG_FW_DIAG)) {
-				cmd->cmd_active_timeout -=
-				    mptsas_scsi_watchdog_tick;
-				if (cmd->cmd_active_timeout <= 0) {
+				} else if (cmd->cmd_flags &
+				    (CFLAG_PASSTHRU | CFLAG_CONFIG |
+				    CFLAG_FW_DIAG)) {
 					/*
 					 * passthrough command timeout
 					 */
@@ -9446,29 +9817,42 @@ mptsas_watchsubr(mptsas_t *mpt)
 			mptsas_restart_hba(mpt);
 		}
 
-		if ((ptgt->m_t_ncmds > 0) &&
-		    (ptgt->m_timebase)) {
+		cmd = TAILQ_LAST(&ptgt->m_active_cmdq, mptsas_active_cmdq);
+		if (cmd == NULL)
+			continue;
 
-			if (ptgt->m_timebase <=
-			    mptsas_scsi_watchdog_tick) {
-				ptgt->m_timebase +=
-				    mptsas_scsi_watchdog_tick;
+		if (cmd->cmd_active_expiration <= timestamp) {
+			/*
+			 * Earliest command timeout expired. Drain throttle.
+			 */
+			mptsas_set_throttle(mpt, ptgt, DRAIN_THROTTLE);
+
+			/*
+			 * Check for remaining commands.
+			 */
+			cmd = TAILQ_FIRST(&ptgt->m_active_cmdq);
+			if (cmd->cmd_active_expiration > timestamp) {
+				/*
+				 * Wait for remaining commands to complete or
+				 * time out.
+				 */
+				NDBG23(("command timed out, pending drain"));
 				continue;
 			}
 
-			ptgt->m_timeout -= mptsas_scsi_watchdog_tick;
+			/*
+			 * All command timeouts expired.
+			 */
+			mptsas_log(mpt, CE_NOTE, "Timeout of %d seconds "
+			    "expired with %d commands on target %d lun %d.",
+			    cmd->cmd_pkt->pkt_time, ptgt->m_t_ncmds,
+			    ptgt->m_devhdl, Lun(cmd));
 
-			if (ptgt->m_timeout < 0) {
-				mptsas_cmd_timeout(mpt, ptgt->m_devhdl);
-				continue;
-			}
-
-			if ((ptgt->m_timeout) <=
-			    mptsas_scsi_watchdog_tick) {
-				NDBG23(("pending timeout"));
-				mptsas_set_throttle(mpt, ptgt,
-				    DRAIN_THROTTLE);
-			}
+			mptsas_cmd_timeout(mpt, ptgt);
+		} else if (cmd->cmd_active_expiration <=
+		    timestamp + (hrtime_t)mptsas_scsi_watchdog_tick * NANOSEC) {
+			NDBG23(("pending timeout"));
+			mptsas_set_throttle(mpt, ptgt, DRAIN_THROTTLE);
 		}
 	}
 }
@@ -9477,16 +9861,28 @@ mptsas_watchsubr(mptsas_t *mpt)
  * timeout recovery
  */
 static void
-mptsas_cmd_timeout(mptsas_t *mpt, uint16_t devhdl)
+mptsas_cmd_timeout(mptsas_t *mpt, mptsas_target_t *ptgt)
 {
+	uint16_t	devhdl;
+	uint64_t	sas_wwn;
+	uint8_t		phy;
+	char		wwn_str[MPTSAS_WWN_STRLEN];
+
+	devhdl = ptgt->m_devhdl;
+	sas_wwn = ptgt->m_addr.mta_wwn;
+	phy = ptgt->m_phynum;
+	if (sas_wwn == 0) {
+		(void) sprintf(wwn_str, "p%x", phy);
+	} else {
+		(void) sprintf(wwn_str, "w%016"PRIx64, sas_wwn);
+	}
 
 	NDBG29(("mptsas_cmd_timeout: target=%d", devhdl));
 	mptsas_log(mpt, CE_WARN, "Disconnected command timeout for "
-	    "Target %d", devhdl);
+	    "target %d %s.", devhdl, wwn_str);
 
 	/*
-	 * If the current target is not the target passed in,
-	 * try to reset that target.
+	 * Abort all outstanding commands on the device.
 	 */
 	NDBG29(("mptsas_cmd_timeout: device reset"));
 	if (mptsas_do_scsi_reset(mpt, devhdl) != TRUE) {
@@ -9649,16 +10045,101 @@ mptsas_dump_cmd(mptsas_t *mpt, mptsas_cmd_t *cmd)
 }
 
 static void
+mptsas_passthru_sge(ddi_acc_handle_t acc_hdl, mptsas_pt_request_t *pt,
+    pMpi2SGESimple64_t sgep)
+{
+	uint32_t		sge_flags;
+	uint32_t		data_size, dataout_size;
+	ddi_dma_cookie_t	data_cookie;
+	ddi_dma_cookie_t	dataout_cookie;
+
+	data_size = pt->data_size;
+	dataout_size = pt->dataout_size;
+	data_cookie = pt->data_cookie;
+	dataout_cookie = pt->dataout_cookie;
+
+	if (dataout_size) {
+		sge_flags = dataout_size |
+		    ((uint32_t)(MPI2_SGE_FLAGS_SIMPLE_ELEMENT |
+		    MPI2_SGE_FLAGS_END_OF_BUFFER |
+		    MPI2_SGE_FLAGS_HOST_TO_IOC |
+		    MPI2_SGE_FLAGS_64_BIT_ADDRESSING) <<
+		    MPI2_SGE_FLAGS_SHIFT);
+		ddi_put32(acc_hdl, &sgep->FlagsLength, sge_flags);
+		ddi_put32(acc_hdl, &sgep->Address.Low,
+		    (uint32_t)(dataout_cookie.dmac_laddress &
+		    0xffffffffull));
+		ddi_put32(acc_hdl, &sgep->Address.High,
+		    (uint32_t)(dataout_cookie.dmac_laddress
+		    >> 32));
+		sgep++;
+	}
+	sge_flags = data_size;
+	sge_flags |= ((uint32_t)(MPI2_SGE_FLAGS_SIMPLE_ELEMENT |
+	    MPI2_SGE_FLAGS_LAST_ELEMENT |
+	    MPI2_SGE_FLAGS_END_OF_BUFFER |
+	    MPI2_SGE_FLAGS_END_OF_LIST |
+	    MPI2_SGE_FLAGS_64_BIT_ADDRESSING) <<
+	    MPI2_SGE_FLAGS_SHIFT);
+	if (pt->direction == MPTSAS_PASS_THRU_DIRECTION_WRITE) {
+		sge_flags |= ((uint32_t)(MPI2_SGE_FLAGS_HOST_TO_IOC) <<
+		    MPI2_SGE_FLAGS_SHIFT);
+	} else {
+		sge_flags |= ((uint32_t)(MPI2_SGE_FLAGS_IOC_TO_HOST) <<
+		    MPI2_SGE_FLAGS_SHIFT);
+	}
+	ddi_put32(acc_hdl, &sgep->FlagsLength,
+	    sge_flags);
+	ddi_put32(acc_hdl, &sgep->Address.Low,
+	    (uint32_t)(data_cookie.dmac_laddress &
+	    0xffffffffull));
+	ddi_put32(acc_hdl, &sgep->Address.High,
+	    (uint32_t)(data_cookie.dmac_laddress >> 32));
+}
+
+static void
+mptsas_passthru_ieee_sge(ddi_acc_handle_t acc_hdl, mptsas_pt_request_t *pt,
+    pMpi2IeeeSgeSimple64_t ieeesgep)
+{
+	uint8_t			sge_flags;
+	uint32_t		data_size, dataout_size;
+	ddi_dma_cookie_t	data_cookie;
+	ddi_dma_cookie_t	dataout_cookie;
+
+	data_size = pt->data_size;
+	dataout_size = pt->dataout_size;
+	data_cookie = pt->data_cookie;
+	dataout_cookie = pt->dataout_cookie;
+
+	sge_flags = (MPI2_IEEE_SGE_FLAGS_SIMPLE_ELEMENT |
+	    MPI2_IEEE_SGE_FLAGS_SYSTEM_ADDR);
+	if (dataout_size) {
+		ddi_put32(acc_hdl, &ieeesgep->Length, dataout_size);
+		ddi_put32(acc_hdl, &ieeesgep->Address.Low,
+		    (uint32_t)(dataout_cookie.dmac_laddress &
+		    0xffffffffull));
+		ddi_put32(acc_hdl, &ieeesgep->Address.High,
+		    (uint32_t)(dataout_cookie.dmac_laddress >> 32));
+		ddi_put8(acc_hdl, &ieeesgep->Flags, sge_flags);
+		ieeesgep++;
+	}
+	sge_flags |= MPI25_IEEE_SGE_FLAGS_END_OF_LIST;
+	ddi_put32(acc_hdl, &ieeesgep->Length, data_size);
+	ddi_put32(acc_hdl, &ieeesgep->Address.Low,
+	    (uint32_t)(data_cookie.dmac_laddress & 0xffffffffull));
+	ddi_put32(acc_hdl, &ieeesgep->Address.High,
+	    (uint32_t)(data_cookie.dmac_laddress >> 32));
+	ddi_put8(acc_hdl, &ieeesgep->Flags, sge_flags);
+}
+
+static void
 mptsas_start_passthru(mptsas_t *mpt, mptsas_cmd_t *cmd)
 {
 	caddr_t			memp;
 	pMPI2RequestHeader_t	request_hdrp;
 	struct scsi_pkt		*pkt = cmd->cmd_pkt;
 	mptsas_pt_request_t	*pt = pkt->pkt_ha_private;
-	uint32_t		request_size, data_size, dataout_size;
-	uint32_t		direction;
-	ddi_dma_cookie_t	data_cookie;
-	ddi_dma_cookie_t	dataout_cookie;
+	uint32_t		request_size;
 	uint32_t		request_desc_low, request_desc_high = 0;
 	uint32_t		i, sense_bufp;
 	uint8_t			desc_type;
@@ -9669,12 +10150,7 @@ mptsas_start_passthru(mptsas_t *mpt, mptsas_cmd_t *cmd)
 	desc_type = MPI2_REQ_DESCRIPT_FLAGS_DEFAULT_TYPE;
 
 	request = pt->request;
-	direction = pt->direction;
 	request_size = pt->request_size;
-	data_size = pt->data_size;
-	dataout_size = pt->dataout_size;
-	data_cookie = pt->data_cookie;
-	dataout_cookie = pt->dataout_cookie;
 
 	/*
 	 * Store the passthrough message in memory location
@@ -9688,50 +10164,22 @@ mptsas_start_passthru(mptsas_t *mpt, mptsas_cmd_t *cmd)
 		bcopy(request + i, memp + i, 1);
 	}
 
-	if (data_size || dataout_size) {
-		pMpi2SGESimple64_t	sgep;
-		uint32_t		sge_flags;
+	NDBG15(("mptsas_start_passthru: Func 0x%x, MsgFlags 0x%x, "
+	    "size=%d, in %d, out %d", request_hdrp->Function,
+	    request_hdrp->MsgFlags, request_size,
+	    pt->data_size, pt->dataout_size));
 
-		sgep = (pMpi2SGESimple64_t)((uint8_t *)request_hdrp +
-		    request_size);
-		if (dataout_size) {
-
-			sge_flags = dataout_size |
-			    ((uint32_t)(MPI2_SGE_FLAGS_SIMPLE_ELEMENT |
-			    MPI2_SGE_FLAGS_END_OF_BUFFER |
-			    MPI2_SGE_FLAGS_HOST_TO_IOC |
-			    MPI2_SGE_FLAGS_64_BIT_ADDRESSING) <<
-			    MPI2_SGE_FLAGS_SHIFT);
-			ddi_put32(acc_hdl, &sgep->FlagsLength, sge_flags);
-			ddi_put32(acc_hdl, &sgep->Address.Low,
-			    (uint32_t)(dataout_cookie.dmac_laddress &
-			    0xffffffffull));
-			ddi_put32(acc_hdl, &sgep->Address.High,
-			    (uint32_t)(dataout_cookie.dmac_laddress
-			    >> 32));
-			sgep++;
-		}
-		sge_flags = data_size;
-		sge_flags |= ((uint32_t)(MPI2_SGE_FLAGS_SIMPLE_ELEMENT |
-		    MPI2_SGE_FLAGS_LAST_ELEMENT |
-		    MPI2_SGE_FLAGS_END_OF_BUFFER |
-		    MPI2_SGE_FLAGS_END_OF_LIST |
-		    MPI2_SGE_FLAGS_64_BIT_ADDRESSING) <<
-		    MPI2_SGE_FLAGS_SHIFT);
-		if (direction == MPTSAS_PASS_THRU_DIRECTION_WRITE) {
-			sge_flags |= ((uint32_t)(MPI2_SGE_FLAGS_HOST_TO_IOC) <<
-			    MPI2_SGE_FLAGS_SHIFT);
-		} else {
-			sge_flags |= ((uint32_t)(MPI2_SGE_FLAGS_IOC_TO_HOST) <<
-			    MPI2_SGE_FLAGS_SHIFT);
-		}
-		ddi_put32(acc_hdl, &sgep->FlagsLength,
-		    sge_flags);
-		ddi_put32(acc_hdl, &sgep->Address.Low,
-		    (uint32_t)(data_cookie.dmac_laddress &
-		    0xffffffffull));
-		ddi_put32(acc_hdl, &sgep->Address.High,
-		    (uint32_t)(data_cookie.dmac_laddress >> 32));
+	/*
+	 * Add an SGE, even if the length is zero.
+	 */
+	if (mpt->m_MPI25 && pt->simple == 0) {
+		mptsas_passthru_ieee_sge(acc_hdl, pt,
+		    (pMpi2IeeeSgeSimple64_t)
+		    ((uint8_t *)request_hdrp + pt->sgl_offset));
+	} else {
+		mptsas_passthru_sge(acc_hdl, pt,
+		    (pMpi2SGESimple64_t)
+		    ((uint8_t *)request_hdrp + pt->sgl_offset));
 	}
 
 	function = request_hdrp->Function;
@@ -9739,6 +10187,7 @@ mptsas_start_passthru(mptsas_t *mpt, mptsas_cmd_t *cmd)
 	    (function == MPI2_FUNCTION_RAID_SCSI_IO_PASSTHROUGH)) {
 		pMpi2SCSIIORequest_t	scsi_io_req;
 
+		NDBG15(("mptsas_start_passthru: Is SCSI IO Req"));
 		scsi_io_req = (pMpi2SCSIIORequest_t)request_hdrp;
 		/*
 		 * Put SGE for data and data_out buffer at the end of
@@ -9789,6 +10238,367 @@ mptsas_start_passthru(mptsas_t *mpt, mptsas_cmd_t *cmd)
 	}
 }
 
+typedef void (mptsas_pre_f)(mptsas_t *, mptsas_pt_request_t *);
+static mptsas_pre_f	mpi_pre_ioc_facts;
+static mptsas_pre_f	mpi_pre_port_facts;
+static mptsas_pre_f	mpi_pre_fw_download;
+static mptsas_pre_f	mpi_pre_fw_25_download;
+static mptsas_pre_f	mpi_pre_fw_upload;
+static mptsas_pre_f	mpi_pre_fw_25_upload;
+static mptsas_pre_f	mpi_pre_sata_passthrough;
+static mptsas_pre_f	mpi_pre_smp_passthrough;
+static mptsas_pre_f	mpi_pre_config;
+static mptsas_pre_f	mpi_pre_sas_io_unit_control;
+static mptsas_pre_f	mpi_pre_scsi_io_req;
+
+/*
+ * Prepare the pt for a SAS2 FW_DOWNLOAD request.
+ */
+static void
+mpi_pre_fw_download(mptsas_t *mpt, mptsas_pt_request_t *pt)
+{
+	pMpi2FWDownloadTCSGE_t tcsge;
+	pMpi2FWDownloadRequest req;
+
+	/*
+	 * If SAS3, call separate function.
+	 */
+	if (mpt->m_MPI25) {
+		mpi_pre_fw_25_download(mpt, pt);
+		return;
+	}
+
+	/*
+	 * User requests should come in with the Transaction
+	 * context element where the SGL will go. Putting the
+	 * SGL after that seems to work, but don't really know
+	 * why. Other drivers tend to create an extra SGL and
+	 * refer to the TCE through that.
+	 */
+	req = (pMpi2FWDownloadRequest)pt->request;
+	tcsge = (pMpi2FWDownloadTCSGE_t)&req->SGL;
+	if (tcsge->ContextSize != 0 || tcsge->DetailsLength != 12 ||
+	    tcsge->Flags != MPI2_SGE_FLAGS_TRANSACTION_ELEMENT) {
+		mptsas_log(mpt, CE_WARN, "FW Download tce invalid!");
+	}
+
+	pt->sgl_offset = offsetof(MPI2_FW_DOWNLOAD_REQUEST, SGL) +
+	    sizeof (*tcsge);
+	if (pt->request_size != pt->sgl_offset)
+		NDBG15(("mpi_pre_fw_download(): Incorrect req size, "
+		    "0x%x, should be 0x%x, dataoutsz 0x%x",
+		    (int)pt->request_size, (int)pt->sgl_offset,
+		    (int)pt->dataout_size));
+	if (pt->data_size < sizeof (MPI2_FW_DOWNLOAD_REPLY))
+		NDBG15(("mpi_pre_fw_download(): Incorrect rep size, "
+		    "0x%x, should be 0x%x", pt->data_size,
+		    (int)sizeof (MPI2_FW_DOWNLOAD_REPLY)));
+}
+
+/*
+ * Prepare the pt for a SAS3 FW_DOWNLOAD request.
+ */
+static void
+mpi_pre_fw_25_download(mptsas_t *mpt, mptsas_pt_request_t *pt)
+{
+	pMpi2FWDownloadTCSGE_t tcsge;
+	pMpi2FWDownloadRequest req2;
+	pMpi25FWDownloadRequest req25;
+
+	/*
+	 * User requests should come in with the Transaction
+	 * context element where the SGL will go. The new firmware
+	 * Doesn't use TCE and has space in the main request for
+	 * this information. So move to the right place.
+	 */
+	req2 = (pMpi2FWDownloadRequest)pt->request;
+	req25 = (pMpi25FWDownloadRequest)pt->request;
+	tcsge = (pMpi2FWDownloadTCSGE_t)&req2->SGL;
+	if (tcsge->ContextSize != 0 || tcsge->DetailsLength != 12 ||
+	    tcsge->Flags != MPI2_SGE_FLAGS_TRANSACTION_ELEMENT) {
+		mptsas_log(mpt, CE_WARN, "FW Download tce invalid!");
+	}
+	req25->ImageOffset = tcsge->ImageOffset;
+	req25->ImageSize = tcsge->ImageSize;
+
+	pt->sgl_offset = offsetof(MPI25_FW_DOWNLOAD_REQUEST, SGL);
+	if (pt->request_size != pt->sgl_offset)
+		NDBG15(("mpi_pre_fw_25_download(): Incorrect req size, "
+		    "0x%x, should be 0x%x, dataoutsz 0x%x",
+		    pt->request_size, pt->sgl_offset,
+		    pt->dataout_size));
+	if (pt->data_size < sizeof (MPI2_FW_DOWNLOAD_REPLY))
+		NDBG15(("mpi_pre_fw_25_download(): Incorrect rep size, "
+		    "0x%x, should be 0x%x", pt->data_size,
+		    (int)sizeof (MPI2_FW_UPLOAD_REPLY)));
+}
+
+/*
+ * Prepare the pt for a SAS2 FW_UPLOAD request.
+ */
+static void
+mpi_pre_fw_upload(mptsas_t *mpt, mptsas_pt_request_t *pt)
+{
+	pMpi2FWUploadTCSGE_t tcsge;
+	pMpi2FWUploadRequest_t req;
+
+	/*
+	 * If SAS3, call separate function.
+	 */
+	if (mpt->m_MPI25) {
+		mpi_pre_fw_25_upload(mpt, pt);
+		return;
+	}
+
+	/*
+	 * User requests should come in with the Transaction
+	 * context element where the SGL will go. Putting the
+	 * SGL after that seems to work, but don't really know
+	 * why. Other drivers tend to create an extra SGL and
+	 * refer to the TCE through that.
+	 */
+	req = (pMpi2FWUploadRequest_t)pt->request;
+	tcsge = (pMpi2FWUploadTCSGE_t)&req->SGL;
+	if (tcsge->ContextSize != 0 || tcsge->DetailsLength != 12 ||
+	    tcsge->Flags != MPI2_SGE_FLAGS_TRANSACTION_ELEMENT) {
+		mptsas_log(mpt, CE_WARN, "FW Upload tce invalid!");
+	}
+
+	pt->sgl_offset = offsetof(MPI2_FW_UPLOAD_REQUEST, SGL) +
+	    sizeof (*tcsge);
+	if (pt->request_size != pt->sgl_offset)
+		NDBG15(("mpi_pre_fw_upload(): Incorrect req size, "
+		    "0x%x, should be 0x%x, dataoutsz 0x%x",
+		    pt->request_size, pt->sgl_offset,
+		    pt->dataout_size));
+	if (pt->data_size < sizeof (MPI2_FW_UPLOAD_REPLY))
+		NDBG15(("mpi_pre_fw_upload(): Incorrect rep size, "
+		    "0x%x, should be 0x%x", pt->data_size,
+		    (int)sizeof (MPI2_FW_UPLOAD_REPLY)));
+}
+
+/*
+ * Prepare the pt a SAS3 FW_UPLOAD request.
+ */
+static void
+mpi_pre_fw_25_upload(mptsas_t *mpt, mptsas_pt_request_t *pt)
+{
+	pMpi2FWUploadTCSGE_t tcsge;
+	pMpi2FWUploadRequest_t req2;
+	pMpi25FWUploadRequest_t req25;
+
+	/*
+	 * User requests should come in with the Transaction
+	 * context element where the SGL will go. The new firmware
+	 * Doesn't use TCE and has space in the main request for
+	 * this information. So move to the right place.
+	 */
+	req2 = (pMpi2FWUploadRequest_t)pt->request;
+	req25 = (pMpi25FWUploadRequest_t)pt->request;
+	tcsge = (pMpi2FWUploadTCSGE_t)&req2->SGL;
+	if (tcsge->ContextSize != 0 || tcsge->DetailsLength != 12 ||
+	    tcsge->Flags != MPI2_SGE_FLAGS_TRANSACTION_ELEMENT) {
+		mptsas_log(mpt, CE_WARN, "FW Upload tce invalid!");
+	}
+	req25->ImageOffset = tcsge->ImageOffset;
+	req25->ImageSize = tcsge->ImageSize;
+
+	pt->sgl_offset = offsetof(MPI25_FW_UPLOAD_REQUEST, SGL);
+	if (pt->request_size != pt->sgl_offset)
+		NDBG15(("mpi_pre_fw_25_upload(): Incorrect req size, "
+		    "0x%x, should be 0x%x, dataoutsz 0x%x",
+		    pt->request_size, pt->sgl_offset,
+		    pt->dataout_size));
+	if (pt->data_size < sizeof (MPI2_FW_UPLOAD_REPLY))
+		NDBG15(("mpi_pre_fw_25_upload(): Incorrect rep size, "
+		    "0x%x, should be 0x%x", pt->data_size,
+		    (int)sizeof (MPI2_FW_UPLOAD_REPLY)));
+}
+
+/*
+ * Prepare the pt for an IOC_FACTS request.
+ */
+static void
+mpi_pre_ioc_facts(mptsas_t *mpt, mptsas_pt_request_t *pt)
+{
+#ifndef __lock_lint
+	_NOTE(ARGUNUSED(mpt))
+#endif
+	if (pt->request_size != sizeof (MPI2_IOC_FACTS_REQUEST))
+		NDBG15(("mpi_pre_ioc_facts(): Incorrect req size, "
+		    "0x%x, should be 0x%x, dataoutsz 0x%x",
+		    pt->request_size,
+		    (int)sizeof (MPI2_IOC_FACTS_REQUEST),
+		    pt->dataout_size));
+	if (pt->data_size != sizeof (MPI2_IOC_FACTS_REPLY))
+		NDBG15(("mpi_pre_ioc_facts(): Incorrect rep size, "
+		    "0x%x, should be 0x%x", pt->data_size,
+		    (int)sizeof (MPI2_IOC_FACTS_REPLY)));
+	pt->sgl_offset = (uint16_t)pt->request_size;
+}
+
+/*
+ * Prepare the pt for a PORT_FACTS request.
+ */
+static void
+mpi_pre_port_facts(mptsas_t *mpt, mptsas_pt_request_t *pt)
+{
+#ifndef __lock_lint
+	_NOTE(ARGUNUSED(mpt))
+#endif
+	if (pt->request_size != sizeof (MPI2_PORT_FACTS_REQUEST))
+		NDBG15(("mpi_pre_port_facts(): Incorrect req size, "
+		    "0x%x, should be 0x%x, dataoutsz 0x%x",
+		    pt->request_size,
+		    (int)sizeof (MPI2_PORT_FACTS_REQUEST),
+		    pt->dataout_size));
+	if (pt->data_size != sizeof (MPI2_PORT_FACTS_REPLY))
+		NDBG15(("mpi_pre_port_facts(): Incorrect rep size, "
+		    "0x%x, should be 0x%x", pt->data_size,
+		    (int)sizeof (MPI2_PORT_FACTS_REPLY)));
+	pt->sgl_offset = (uint16_t)pt->request_size;
+}
+
+/*
+ * Prepare pt for a SATA_PASSTHROUGH request.
+ */
+static void
+mpi_pre_sata_passthrough(mptsas_t *mpt, mptsas_pt_request_t *pt)
+{
+#ifndef __lock_lint
+	_NOTE(ARGUNUSED(mpt))
+#endif
+	pt->sgl_offset = offsetof(MPI2_SATA_PASSTHROUGH_REQUEST, SGL);
+	if (pt->request_size != pt->sgl_offset)
+		NDBG15(("mpi_pre_sata_passthrough(): Incorrect req size, "
+		    "0x%x, should be 0x%x, dataoutsz 0x%x",
+		    pt->request_size, pt->sgl_offset,
+		    pt->dataout_size));
+	if (pt->data_size != sizeof (MPI2_SATA_PASSTHROUGH_REPLY))
+		NDBG15(("mpi_pre_sata_passthrough(): Incorrect rep size, "
+		    "0x%x, should be 0x%x", pt->data_size,
+		    (int)sizeof (MPI2_SATA_PASSTHROUGH_REPLY)));
+}
+
+static void
+mpi_pre_smp_passthrough(mptsas_t *mpt, mptsas_pt_request_t *pt)
+{
+#ifndef __lock_lint
+	_NOTE(ARGUNUSED(mpt))
+#endif
+	pt->sgl_offset = offsetof(MPI2_SMP_PASSTHROUGH_REQUEST, SGL);
+	if (pt->request_size != pt->sgl_offset)
+		NDBG15(("mpi_pre_smp_passthrough(): Incorrect req size, "
+		    "0x%x, should be 0x%x, dataoutsz 0x%x",
+		    pt->request_size, pt->sgl_offset,
+		    pt->dataout_size));
+	if (pt->data_size != sizeof (MPI2_SMP_PASSTHROUGH_REPLY))
+		NDBG15(("mpi_pre_smp_passthrough(): Incorrect rep size, "
+		    "0x%x, should be 0x%x", pt->data_size,
+		    (int)sizeof (MPI2_SMP_PASSTHROUGH_REPLY)));
+}
+
+/*
+ * Prepare pt for a CONFIG request.
+ */
+static void
+mpi_pre_config(mptsas_t *mpt, mptsas_pt_request_t *pt)
+{
+#ifndef __lock_lint
+	_NOTE(ARGUNUSED(mpt))
+#endif
+	pt->sgl_offset = offsetof(MPI2_CONFIG_REQUEST, PageBufferSGE);
+	if (pt->request_size != pt->sgl_offset)
+		NDBG15(("mpi_pre_config(): Incorrect req size, 0x%x, "
+		    "should be 0x%x, dataoutsz 0x%x", pt->request_size,
+		    pt->sgl_offset, pt->dataout_size));
+	if (pt->data_size != sizeof (MPI2_CONFIG_REPLY))
+		NDBG15(("mpi_pre_config(): Incorrect rep size, 0x%x, "
+		    "should be 0x%x", pt->data_size,
+		    (int)sizeof (MPI2_CONFIG_REPLY)));
+	pt->simple = 1;
+}
+
+/*
+ * Prepare pt for a SCSI_IO_REQ request.
+ */
+static void
+mpi_pre_scsi_io_req(mptsas_t *mpt, mptsas_pt_request_t *pt)
+{
+#ifndef __lock_lint
+	_NOTE(ARGUNUSED(mpt))
+#endif
+	pt->sgl_offset = offsetof(MPI2_SCSI_IO_REQUEST, SGL);
+	if (pt->request_size != pt->sgl_offset)
+		NDBG15(("mpi_pre_config(): Incorrect req size, 0x%x, "
+		    "should be 0x%x, dataoutsz 0x%x", pt->request_size,
+		    pt->sgl_offset,
+		    pt->dataout_size));
+	if (pt->data_size != sizeof (MPI2_SCSI_IO_REPLY))
+		NDBG15(("mpi_pre_config(): Incorrect rep size, 0x%x, "
+		    "should be 0x%x", pt->data_size,
+		    (int)sizeof (MPI2_SCSI_IO_REPLY)));
+}
+
+/*
+ * Prepare the mptsas_cmd for a SAS_IO_UNIT_CONTROL request.
+ */
+static void
+mpi_pre_sas_io_unit_control(mptsas_t *mpt, mptsas_pt_request_t *pt)
+{
+#ifndef __lock_lint
+	_NOTE(ARGUNUSED(mpt))
+#endif
+	pt->sgl_offset = (uint16_t)pt->request_size;
+}
+
+/*
+ * A set of functions to prepare an mptsas_cmd for the various
+ * supported requests.
+ */
+static struct mptsas_func {
+	U8		Function;
+	char		*Name;
+	mptsas_pre_f	*f_pre;
+} mptsas_func_list[] = {
+	{ MPI2_FUNCTION_IOC_FACTS, "IOC_FACTS",		mpi_pre_ioc_facts },
+	{ MPI2_FUNCTION_PORT_FACTS, "PORT_FACTS",	mpi_pre_port_facts },
+	{ MPI2_FUNCTION_FW_DOWNLOAD, "FW_DOWNLOAD",	mpi_pre_fw_download },
+	{ MPI2_FUNCTION_FW_UPLOAD, "FW_UPLOAD",		mpi_pre_fw_upload },
+	{ MPI2_FUNCTION_SATA_PASSTHROUGH, "SATA_PASSTHROUGH",
+	    mpi_pre_sata_passthrough },
+	{ MPI2_FUNCTION_SMP_PASSTHROUGH, "SMP_PASSTHROUGH",
+	    mpi_pre_smp_passthrough},
+	{ MPI2_FUNCTION_SCSI_IO_REQUEST, "SCSI_IO_REQUEST",
+	    mpi_pre_scsi_io_req},
+	{ MPI2_FUNCTION_CONFIG, "CONFIG",		mpi_pre_config},
+	{ MPI2_FUNCTION_SAS_IO_UNIT_CONTROL, "SAS_IO_UNIT_CONTROL",
+	    mpi_pre_sas_io_unit_control },
+	{ 0xFF, NULL,				NULL } /* list end */
+};
+
+static void
+mptsas_prep_sgl_offset(mptsas_t *mpt, mptsas_pt_request_t *pt)
+{
+	pMPI2RequestHeader_t	hdr;
+	struct mptsas_func	*f;
+
+	hdr = (pMPI2RequestHeader_t)pt->request;
+
+	for (f = mptsas_func_list; f->f_pre != NULL; f++) {
+		if (hdr->Function == f->Function) {
+			f->f_pre(mpt, pt);
+			NDBG15(("mptsas_prep_sgl_offset: Function %s,"
+			    " sgl_offset 0x%x", f->Name,
+			    pt->sgl_offset));
+			return;
+		}
+	}
+	NDBG15(("mptsas_prep_sgl_offset: Unknown Function 0x%02x,"
+	    " returning req_size 0x%x for sgl_offset",
+	    hdr->Function, pt->request_size));
+	pt->sgl_offset = (uint16_t)pt->request_size;
+}
 
 
 static int
@@ -9870,6 +10680,8 @@ mptsas_do_passthru(mptsas_t *mpt, uint8_t *request, uint8_t *reply,
 			}
 			mutex_enter(&mpt->m_mutex);
 		}
+	} else {
+		bzero(&data_dma_state, sizeof (data_dma_state));
 	}
 
 	if (dataout_size != 0) {
@@ -9893,6 +10705,8 @@ mptsas_do_passthru(mptsas_t *mpt, uint8_t *request, uint8_t *reply,
 			}
 		}
 		mutex_enter(&mpt->m_mutex);
+	} else {
+		bzero(&dataout_dma_state, sizeof (dataout_dma_state));
 	}
 
 	if ((rvalue = (mptsas_request_from_pool(mpt, &cmd, &pkt))) == -1) {
@@ -9910,11 +10724,13 @@ mptsas_do_passthru(mptsas_t *mpt, uint8_t *request, uint8_t *reply,
 
 	pt.request = (uint8_t *)request_msg;
 	pt.direction = direction;
+	pt.simple = 0;
 	pt.request_size = request_size;
 	pt.data_size = data_size;
 	pt.dataout_size = dataout_size;
 	pt.data_cookie = data_dma_state.cookie;
 	pt.dataout_cookie = dataout_dma_state.cookie;
+	mptsas_prep_sgl_offset(mpt, &pt);
 
 	/*
 	 * Form a blank cmd/pkt to store the acknowledgement message
@@ -11212,7 +12028,9 @@ mptsas_read_adapter_data(mptsas_t *mpt, mptsas_adapter_data_t *adapter_data)
 	char	*driver_verstr = MPTSAS_MOD_STRING;
 
 	mptsas_lookup_pci_data(mpt, adapter_data);
-	adapter_data->AdapterType = MPTIOCTL_ADAPTER_TYPE_SAS2;
+	adapter_data->AdapterType = mpt->m_MPI25 ?
+	    MPTIOCTL_ADAPTER_TYPE_SAS3 :
+	    MPTIOCTL_ADAPTER_TYPE_SAS2;
 	adapter_data->PCIDeviceHwId = (uint32_t)mpt->m_devid;
 	adapter_data->PCIDeviceHwRev = (uint32_t)mpt->m_revid;
 	adapter_data->SubSystemId = (uint32_t)mpt->m_ssid;
@@ -12498,13 +13316,13 @@ mptsas_get_target_device_info(mptsas_t *mpt, uint32_t page_address,
 	uint64_t	devicename;
 	uint16_t	pdev_hdl;
 	mptsas_target_t	*tmp_tgt = NULL;
-	uint16_t	bay_num, enclosure;
+	uint16_t	bay_num, enclosure, io_flags;
 
 	ASSERT(*pptgt == NULL);
 
 	rval = mptsas_get_sas_device_page0(mpt, page_address, dev_handle,
 	    &sas_wwn, &dev_info, &physport, &phynum, &pdev_hdl,
-	    &bay_num, &enclosure);
+	    &bay_num, &enclosure, &io_flags);
 	if (rval != DDI_SUCCESS) {
 		rval = DEV_INFO_FAIL_PAGE0;
 		return (rval);
@@ -12568,6 +13386,7 @@ mptsas_get_target_device_info(mptsas_t *mpt, uint32_t page_address,
 		rval = DEV_INFO_FAIL_ALLOC;
 		return (rval);
 	}
+	(*pptgt)->m_io_flags = io_flags;
 	(*pptgt)->m_enclosure = enclosure;
 	(*pptgt)->m_slot_num = bay_num;
 	return (DEV_INFO_SUCCESS);
@@ -13980,7 +14799,7 @@ mptsas_create_virt_lun(dev_info_t *pdip, struct scsi_inquiry *inq, char *guid,
 	uint8_t			physport;
 	uint8_t			phy_id;
 	uint32_t		page_address;
-	uint16_t		bay_num, enclosure;
+	uint16_t		bay_num, enclosure, io_flags;
 	char			pdev_wwn_str[MPTSAS_WWN_STRLEN];
 	uint32_t		dev_info;
 
@@ -14158,7 +14977,7 @@ mptsas_create_virt_lun(dev_info_t *pdip, struct scsi_inquiry *inq, char *guid,
 		    (uint32_t)ptgt->m_devhdl;
 		rval = mptsas_get_sas_device_page0(mpt, page_address,
 		    &dev_hdl, &dev_sas_wwn, &dev_info, &physport,
-		    &phy_id, &pdev_hdl, &bay_num, &enclosure);
+		    &phy_id, &pdev_hdl, &bay_num, &enclosure, &io_flags);
 		if (rval != DDI_SUCCESS) {
 			mutex_exit(&mpt->m_mutex);
 			mptsas_log(mpt, CE_WARN, "mptsas unable to get "
@@ -14171,7 +14990,7 @@ mptsas_create_virt_lun(dev_info_t *pdip, struct scsi_inquiry *inq, char *guid,
 		    MPI2_SAS_DEVICE_PGAD_FORM_MASK) | (uint32_t)pdev_hdl;
 		rval = mptsas_get_sas_device_page0(mpt, page_address,
 		    &dev_hdl, &pdev_sas_wwn, &pdev_info, &physport,
-		    &phy_id, &pdev_hdl, &bay_num, &enclosure);
+		    &phy_id, &pdev_hdl, &bay_num, &enclosure, &io_flags);
 		if (rval != DDI_SUCCESS) {
 			mutex_exit(&mpt->m_mutex);
 			mptsas_log(mpt, CE_WARN, "mptsas unable to get"
@@ -14328,7 +15147,7 @@ mptsas_create_phys_lun(dev_info_t *pdip, struct scsi_inquiry *inq,
 	uint8_t			physport;
 	uint8_t			phy_id;
 	uint32_t		page_address;
-	uint16_t		bay_num, enclosure;
+	uint16_t		bay_num, enclosure, io_flags;
 	char			pdev_wwn_str[MPTSAS_WWN_STRLEN];
 	uint32_t		dev_info;
 	int64_t			lun64 = 0;
@@ -14465,7 +15284,7 @@ mptsas_create_phys_lun(dev_info_t *pdip, struct scsi_inquiry *inq,
 		rval = mptsas_get_sas_device_page0(mpt, page_address,
 		    &dev_hdl, &dev_sas_wwn, &dev_info,
 		    &physport, &phy_id, &pdev_hdl,
-		    &bay_num, &enclosure);
+		    &bay_num, &enclosure, &io_flags);
 		if (rval != DDI_SUCCESS) {
 			mutex_exit(&mpt->m_mutex);
 			mptsas_log(mpt, CE_WARN, "mptsas unable to get"
@@ -14477,8 +15296,8 @@ mptsas_create_phys_lun(dev_info_t *pdip, struct scsi_inquiry *inq,
 		page_address = (MPI2_SAS_DEVICE_PGAD_FORM_HANDLE &
 		    MPI2_SAS_DEVICE_PGAD_FORM_MASK) | (uint32_t)pdev_hdl;
 		rval = mptsas_get_sas_device_page0(mpt, page_address,
-		    &dev_hdl, &pdev_sas_wwn, &pdev_info,
-		    &physport, &phy_id, &pdev_hdl, &bay_num, &enclosure);
+		    &dev_hdl, &pdev_sas_wwn, &pdev_info, &physport,
+		    &phy_id, &pdev_hdl, &bay_num, &enclosure, &io_flags);
 		if (rval != DDI_SUCCESS) {
 			mutex_exit(&mpt->m_mutex);
 			mptsas_log(mpt, CE_WARN, "mptsas unable to create "
@@ -14728,7 +15547,7 @@ mptsas_online_smp(dev_info_t *pdip, mptsas_smp_t *smp_node,
 	char		*iport = NULL;
 	mptsas_phymask_t	phy_mask = 0;
 	uint16_t	attached_devhdl;
-	uint16_t	bay_num, enclosure;
+	uint16_t	bay_num, enclosure, io_flags;
 
 	(void) sprintf(wwn_str, "%"PRIx64, smp_node->m_addr.mta_wwn);
 
@@ -14795,8 +15614,8 @@ mptsas_online_smp(dev_info_t *pdip, mptsas_smp_t *smp_node,
 		    MPI2_SAS_DEVICE_PGAD_FORM_MASK) |
 		    (uint32_t)dev_info.m_pdevhdl;
 		rval = mptsas_get_sas_device_page0(mpt, page_address,
-		    &dev_hdl, &sas_wwn, &smp_node->m_pdevinfo,
-		    &physport, &phy_id, &pdev_hdl, &bay_num, &enclosure);
+		    &dev_hdl, &sas_wwn, &smp_node->m_pdevinfo, &physport,
+		    &phy_id, &pdev_hdl, &bay_num, &enclosure, &io_flags);
 		if (rval != DDI_SUCCESS) {
 			mutex_exit(&mpt->m_mutex);
 			mptsas_log(mpt, CE_WARN, "mptsas unable to get "
@@ -14810,7 +15629,8 @@ mptsas_online_smp(dev_info_t *pdip, mptsas_smp_t *smp_node,
 		    (uint32_t)dev_info.m_devhdl;
 		rval = mptsas_get_sas_device_page0(mpt, page_address,
 		    &dev_hdl, &smp_sas_wwn, &smp_node->m_deviceinfo,
-		    &physport, &phy_id, &pdev_hdl, &bay_num, &enclosure);
+		    &physport, &phy_id, &pdev_hdl, &bay_num, &enclosure,
+		    &io_flags);
 		if (rval != DDI_SUCCESS) {
 			mutex_exit(&mpt->m_mutex);
 			mptsas_log(mpt, CE_WARN, "mptsas unable to get "
@@ -15268,6 +16088,7 @@ mptsas_tgt_alloc(mptsas_t *mpt, uint16_t devhdl, uint64_t wwid,
 	tmp_tgt->m_qfull_retry_interval =
 	    drv_usectohz(QFULL_RETRY_INTERVAL * 1000);
 	tmp_tgt->m_t_throttle = MAX_THROTTLE;
+	TAILQ_INIT(&tmp_tgt->m_active_cmdq);
 
 	refhash_insert(mpt->m_targets, tmp_tgt);
 

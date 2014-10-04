@@ -1,7 +1,7 @@
 '\" te
 .\" Copyright (c) 2013 by Delphix. All rights reserved.
 .\" Copyright (c) 2013 by Saso Kiselkov. All rights reserved.
-.\" Copyright (c) 2013, Joyent, Inc. All rights reserved.
+.\" Copyright (c) 2014, Joyent, Inc. All rights reserved.
 .\" The contents of this file are subject to the terms of the Common Development
 .\" and Distribution License (the "License").  You may not use this file except
 .\" in compliance with the License. You can obtain a copy of the license at
@@ -202,6 +202,27 @@ or snapshots which were created after enabling this feature.
 .sp
 .ne 2
 .na
+\fB\fBfilesystem_limits\fR\fR
+.ad
+.RS 4n
+.TS
+l l .
+GUID	com.joyent:filesystem_limits
+READ\-ONLY COMPATIBLE	yes
+DEPENDENCIES	extensible_dataset
+.TE
+
+This feature enables filesystem and snapshot limits. These limits can be used
+to control how many filesystems and/or snapshots can be created at the point in
+the tree on which the limits are set.
+
+This feature is \fBactive\fR once either of the limit properties has been
+set on a dataset. Once activated the feature is never deactivated.
+.RE
+
+.sp
+.ne 2
+.na
 \fB\fBlz4_compress\fR\fR
 .ad
 .RS 4n
@@ -222,13 +243,14 @@ giving approximately 10% better compression ratio.
 
 When the \fBlz4_compress\fR feature is set to \fBenabled\fR, the
 administrator can turn on \fBlz4\fR compression on any dataset on the
-pool using the \fBzfs\fR(1M) command. Please note that doing so will
-immediately activate the \fBlz4_compress\fR feature on the underlying
-pool (even before any data is written), and the feature will not be
-deactivated. Since this feature is not read-only compatible, this
-operation will render the pool unimportable on systems without support
-for the \fBlz4_compress\fR feature. Booting off of \fBlz4\fR-compressed
-root pools is supported.
+pool using the \fBzfs\fR(1M) command. Also, all newly written metadata
+will be compressed with \fBlz4\fR algorithm. Since this feature is not
+read-only compatible, this operation will render the pool unimportable
+on systems without support for the \fBlz4_compress\fR feature. Booting
+off of \fBlz4\fR-compressed root pools is supported.
+
+This feature becomes \fBactive\fR as soon as it is enabled and will
+never return to being \fBenabled\fB.
 .RE
 
 .sp
@@ -380,6 +402,33 @@ never return to being \fBenabled\fB.
 
 .RE
 
+.sp
+.ne 2
+.na
+\fB\fBembedded_data\fR\fR
+.ad
+.RS 4n
+.TS
+l l .
+GUID	com.delphix:embedded_data
+READ\-ONLY COMPATIBLE	no
+DEPENDENCIES	none
+.TE
+
+This feature improves the performance and compression ratio of
+highly-compressible blocks.  Blocks whose contents can compress to 112 bytes
+or smaller can take advantage of this feature.
+
+When this feature is enabled, the contents of highly-compressible blocks are
+stored in the block "pointer" itself (a misnomer in this case, as it contains
+the compresseed data, rather than a pointer to its location on disk).  Thus
+the space of the block (one sector, typically 512 bytes or 4KB) is saved,
+and no additional i/o is needed to read and write the data block.
+
+This feature becomes \fBactive\fR as soon as it is enabled and will
+never return to being \fBenabled\fR.
+
+.RE
 
 .SH "SEE ALSO"
 \fBzpool\fR(1M)

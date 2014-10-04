@@ -21,7 +21,7 @@
 
 /*
  * Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright 2013 Joyent, Inc. All rights reserved.
+ * Copyright 2013, Joyent Inc. All rights reserved.
  */
 
 /*
@@ -1860,6 +1860,71 @@ zone_kstat_create_common(zone_t *zone, char *name,
 	return (ksp);
 }
 
+static int
+zone_misc_kstat_update(kstat_t *ksp, int rw)
+{
+	zone_t *zone = ksp->ks_private;
+	zone_misc_kstat_t *zmp = ksp->ks_data;
+	hrtime_t tmp;
+
+	if (rw == KSTAT_WRITE)
+		return (EACCES);
+
+	tmp = zone->zone_utime;
+	scalehrtime(&tmp);
+	zmp->zm_utime.value.ui64 = tmp;
+	tmp = zone->zone_stime;
+	scalehrtime(&tmp);
+	zmp->zm_stime.value.ui64 = tmp;
+	tmp = zone->zone_wtime;
+	scalehrtime(&tmp);
+	zmp->zm_wtime.value.ui64 = tmp;
+
+	zmp->zm_avenrun1.value.ui32 = zone->zone_avenrun[0];
+	zmp->zm_avenrun5.value.ui32 = zone->zone_avenrun[1];
+	zmp->zm_avenrun15.value.ui32 = zone->zone_avenrun[2];
+
+	return (0);
+}
+
+static kstat_t *
+zone_misc_kstat_create(zone_t *zone)
+{
+	kstat_t *ksp;
+	zone_misc_kstat_t *zmp;
+
+	if ((ksp = kstat_create_zone("zones", zone->zone_id,
+	    zone->zone_name, "zone_misc", KSTAT_TYPE_NAMED,
+	    sizeof (zone_misc_kstat_t) / sizeof (kstat_named_t),
+	    KSTAT_FLAG_VIRTUAL, zone->zone_id)) == NULL)
+		return (NULL);
+
+	if (zone->zone_id != GLOBAL_ZONEID)
+		kstat_zone_add(ksp, GLOBAL_ZONEID);
+
+	zmp = ksp->ks_data = kmem_zalloc(sizeof (zone_misc_kstat_t), KM_SLEEP);
+	ksp->ks_data_size += strlen(zone->zone_name) + 1;
+	ksp->ks_lock = &zone->zone_misc_lock;
+	zone->zone_misc_stats = zmp;
+
+	/* The kstat "name" field is not large enough for a full zonename */
+	kstat_named_init(&zmp->zm_zonename, "zonename", KSTAT_DATA_STRING);
+	kstat_named_setstr(&zmp->zm_zonename, zone->zone_name);
+	kstat_named_init(&zmp->zm_utime, "nsec_user", KSTAT_DATA_UINT64);
+	kstat_named_init(&zmp->zm_stime, "nsec_sys", KSTAT_DATA_UINT64);
+	kstat_named_init(&zmp->zm_wtime, "nsec_waitrq", KSTAT_DATA_UINT64);
+	kstat_named_init(&zmp->zm_avenrun1, "avenrun_1min", KSTAT_DATA_UINT32);
+	kstat_named_init(&zmp->zm_avenrun5, "avenrun_5min", KSTAT_DATA_UINT32);
+	kstat_named_init(&zmp->zm_avenrun15, "avenrun_15min",
+	    KSTAT_DATA_UINT32);
+
+	ksp->ks_update = zone_misc_kstat_update;
+	ksp->ks_private = zone;
+
+	kstat_install(ksp);
+	return (ksp);
+}
+
 static void
 zone_kstat_create(zone_t *zone)
 {
@@ -1869,17 +1934,22 @@ zone_kstat_create(zone_t *zone)
 	    "swapresv", zone_swapresv_kstat_update);
 	zone->zone_nprocs_kstat = zone_kstat_create_common(zone,
 	    "nprocs", zone_nprocs_kstat_update);
+
+	if ((zone->zone_misc_ksp = zone_misc_kstat_create(zone)) == NULL) {
+		zone->zone_misc_stats = kmem_zalloc(
+		    sizeof (zone_misc_kstat_t), KM_SLEEP);
+	}
 }
 
 static void
-zone_kstat_delete_common(kstat_t **pkstat)
+zone_kstat_delete_common(kstat_t **pkstat, size_t datasz)
 {
 	void *data;
 
 	if (*pkstat != NULL) {
 		data = (*pkstat)->ks_data;
 		kstat_delete(*pkstat);
-		kmem_free(data, sizeof (zone_kstat_t));
+		kmem_free(data, datasz);
 		*pkstat = NULL;
 	}
 }
@@ -1887,9 +1957,14 @@ zone_kstat_delete_common(kstat_t **pkstat)
 static void
 zone_kstat_delete(zone_t *zone)
 {
-	zone_kstat_delete_common(&zone->zone_lockedmem_kstat);
-	zone_kstat_delete_common(&zone->zone_swapresv_kstat);
-	zone_kstat_delete_common(&zone->zone_nprocs_kstat);
+	zone_kstat_delete_common(&zone->zone_lockedmem_kstat,
+	    sizeof (zone_kstat_t));
+	zone_kstat_delete_common(&zone->zone_swapresv_kstat,
+	    sizeof (zone_kstat_t));
+	zone_kstat_delete_common(&zone->zone_nprocs_kstat,
+	    sizeof (zone_kstat_t));
+	zone_kstat_delete_common(&zone->zone_misc_ksp,
+	    sizeof (zone_misc_kstat_t));
 }
 
 /*
@@ -1948,6 +2023,11 @@ zone_zsd_init(void)
 	zone0.zone_swapresv_kstat = NULL;
 	zone0.zone_nprocs_kstat = NULL;
 	zone0.zone_zfs_io_pri = 1;
+
+	zone0.zone_stime = 0;
+	zone0.zone_utime = 0;
+	zone0.zone_wtime = 0;
+
 	list_create(&zone0.zone_ref_list, sizeof (zone_ref_t),
 	    offsetof(zone_ref_t, zref_linkage));
 	list_create(&zone0.zone_zsd, sizeof (struct zsd_entry),
@@ -3020,6 +3100,92 @@ zone_find_by_path(const char *path)
 	zone_hold(zret);
 	mutex_exit(&zonehash_lock);
 	return (zret);
+}
+
+/*
+ * Public interface for updating per-zone load averages.  Called once per
+ * second.
+ *
+ * Based on loadavg_update(), genloadavg() and calcloadavg() from clock.c.
+ */
+void
+zone_loadavg_update()
+{
+	zone_t *zp;
+	zone_status_t status;
+	struct loadavg_s *lavg;
+	hrtime_t zone_total;
+	int i;
+	hrtime_t hr_avg;
+	int nrun;
+	static int64_t f[3] = { 135, 27, 9 };
+	int64_t q, r;
+
+	mutex_enter(&zonehash_lock);
+	for (zp = list_head(&zone_active); zp != NULL;
+	    zp = list_next(&zone_active, zp)) {
+		mutex_enter(&zp->zone_lock);
+
+		/* Skip zones that are on the way down or not yet up */
+		status = zone_status_get(zp);
+		if (status < ZONE_IS_READY || status >= ZONE_IS_DOWN) {
+			/* For all practical purposes the zone doesn't exist. */
+			mutex_exit(&zp->zone_lock);
+			continue;
+		}
+
+		/*
+		 * Update the 10 second moving average data in zone_loadavg.
+		 */
+		lavg = &zp->zone_loadavg;
+
+		zone_total = zp->zone_utime + zp->zone_stime + zp->zone_wtime;
+		scalehrtime(&zone_total);
+
+		/* The zone_total should always be increasing. */
+		lavg->lg_loads[lavg->lg_cur] = (zone_total > lavg->lg_total) ?
+		    zone_total - lavg->lg_total : 0;
+		lavg->lg_cur = (lavg->lg_cur + 1) % S_LOADAVG_SZ;
+		/* lg_total holds the prev. 1 sec. total */
+		lavg->lg_total = zone_total;
+
+		/*
+		 * To simplify the calculation, we don't calculate the load avg.
+		 * until the zone has been up for at least 10 seconds and our
+		 * moving average is thus full.
+		 */
+		if ((lavg->lg_len + 1) < S_LOADAVG_SZ) {
+			lavg->lg_len++;
+			mutex_exit(&zp->zone_lock);
+			continue;
+		}
+
+		/* Now calculate the 1min, 5min, 15 min load avg. */
+		hr_avg = 0;
+		for (i = 0; i < S_LOADAVG_SZ; i++)
+			hr_avg += lavg->lg_loads[i];
+		hr_avg = hr_avg / S_LOADAVG_SZ;
+		nrun = hr_avg / (NANOSEC / LGRP_LOADAVG_IN_THREAD_MAX);
+
+		/* Compute load avg. See comment in calcloadavg() */
+		for (i = 0; i < 3; i++) {
+			q = (zp->zone_hp_avenrun[i] >> 16) << 7;
+			r = (zp->zone_hp_avenrun[i] & 0xffff) << 7;
+			zp->zone_hp_avenrun[i] +=
+			    ((nrun - q) * f[i] - ((r * f[i]) >> 16)) >> 4;
+
+			/* avenrun[] can only hold 31 bits of load avg. */
+			if (zp->zone_hp_avenrun[i] <
+			    ((uint64_t)1<<(31+16-FSHIFT)))
+				zp->zone_avenrun[i] = (int32_t)
+				    (zp->zone_hp_avenrun[i] >> (16 - FSHIFT));
+			else
+				zp->zone_avenrun[i] = 0x7fffffff;
+		}
+
+		mutex_exit(&zp->zone_lock);
+	}
+	mutex_exit(&zonehash_lock);
 }
 
 /*

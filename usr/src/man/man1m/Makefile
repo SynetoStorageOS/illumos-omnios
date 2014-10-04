@@ -69,7 +69,6 @@ _MANFILES=	6to4relay.1m		\
 		cfgadm_sata.1m		\
 		cfgadm_sbd.1m		\
 		cfgadm_scsi.1m		\
-		cfgadm_sdcard.1m	\
 		cfgadm_sysctrl.1m	\
 		cfgadm_usb.1m		\
 		cfsadmin.1m		\
@@ -599,21 +598,8 @@ _MANFILES=	6to4relay.1m		\
 		zpool.1m		\
 		zstreamdump.1m
 
-i386_MANFILES=	lms.1m			\
-		parted.1m		\
-		mkntfs.1m		\
-		ntfscat.1m		\
-		ntfsclone.1m		\
-		ntfscluster.1m		\
-		ntfscmp.1m		\
-		ntfscp.1m		\
-		ntfsfix.1m		\
-		ntfsinfo.1m		\
-		ntfslabel.1m		\
-		ntfsls.1m		\
-		ntfsprogs.1m		\
-		ntfsresize.1m		\
-		ntfsundelete.1m
+i386_MANFILES=				\
+		lms.1m
 
 sparc_MANFILES=	cvcd.1m			\
 		dcs.1m			\

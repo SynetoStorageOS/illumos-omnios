@@ -22,7 +22,7 @@
 /*
  * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright 2011 Nexenta Systems, Inc. All rights reserved.
- * Copyright (c) 2013 by Delphix. All rights reserved.
+ * Copyright (c) 2011, 2014 by Delphix. All rights reserved.
  * Copyright (c) 2012 by Frederik Wessels. All rights reserved.
  * Copyright (c) 2013 by Prasad Joshi (sTec). All rights reserved.
  */
@@ -1887,7 +1887,7 @@ zpool_do_import(int argc, char **argv)
 			break;
 		case 'T':
 			errno = 0;
-			txg = strtoull(optarg, &endptr, 10);
+			txg = strtoull(optarg, &endptr, 0);
 			if (errno != 0 || *endptr != '\0') {
 				(void) fprintf(stderr,
 				    gettext("invalid txg value\n"));
@@ -2754,10 +2754,15 @@ print_one_column(zpool_prop_t prop, uint64_t value, boolean_t scripted)
 	boolean_t fixed;
 	size_t width = zprop_width(prop, &fixed, ZFS_TYPE_POOL);
 
-	zfs_nicenum(value, propval, sizeof (propval));
 
 	if (prop == ZPOOL_PROP_EXPANDSZ && value == 0)
 		(void) strlcpy(propval, "-", sizeof (propval));
+	else if (prop == ZPOOL_PROP_FRAGMENTATION && value == ZFS_FRAG_INVALID)
+		(void) strlcpy(propval, "-", sizeof (propval));
+	else if (prop == ZPOOL_PROP_FRAGMENTATION)
+		(void) snprintf(propval, sizeof (propval), "%llu%%", value);
+	else
+		zfs_nicenum(value, propval, sizeof (propval));
 
 	if (scripted)
 		(void) printf("\t%s", propval);
@@ -2790,9 +2795,9 @@ print_list_stats(zpool_handle_t *zhp, const char *name, nvlist_t *nv,
 		/* only toplevel vdevs have capacity stats */
 		if (vs->vs_space == 0) {
 			if (scripted)
-				(void) printf("\t-\t-\t-");
+				(void) printf("\t-\t-\t-\t-");
 			else
-				(void) printf("      -      -      -");
+				(void) printf("      -      -      -      -");
 		} else {
 			print_one_column(ZPOOL_PROP_SIZE, vs->vs_space,
 			    scripted);
@@ -2800,6 +2805,8 @@ print_list_stats(zpool_handle_t *zhp, const char *name, nvlist_t *nv,
 			    scripted);
 			print_one_column(ZPOOL_PROP_FREE,
 			    vs->vs_space - vs->vs_alloc, scripted);
+			print_one_column(ZPOOL_PROP_FRAGMENTATION,
+			    vs->vs_fragmentation, scripted);
 		}
 		print_one_column(ZPOOL_PROP_EXPANDSZ, vs->vs_esize,
 		    scripted);
@@ -2885,8 +2892,8 @@ zpool_do_list(int argc, char **argv)
 	int ret = 0;
 	list_cbdata_t cb = { 0 };
 	static char default_props[] =
-	    "name,size,allocated,free,expandsize,capacity,dedupratio,"
-	    "health,altroot";
+	    "name,size,allocated,free,fragmentation,expandsize,capacity,"
+	    "dedupratio,health,altroot";
 	char *props = default_props;
 	unsigned long interval = 0, count = 0;
 	zpool_list_t *list;
@@ -2930,17 +2937,10 @@ zpool_do_list(int argc, char **argv)
 	if (zprop_get_list(g_zfs, props, &cb.cb_proplist, ZFS_TYPE_POOL) != 0)
 		usage(B_FALSE);
 
-	if ((list = pool_list_get(argc, argv, &cb.cb_proplist, &ret)) == NULL)
-		return (1);
-
-	if (argc == 0 && !cb.cb_scripted && pool_list_count(list) == 0) {
-		(void) printf(gettext("no pools available\n"));
-		zprop_free_list(cb.cb_proplist);
-		return (0);
-	}
-
 	for (;;) {
-		pool_list_update(list);
+		if ((list = pool_list_get(argc, argv, &cb.cb_proplist,
+		    &ret)) == NULL)
+			return (1);
 
 		if (pool_list_count(list) == 0)
 			break;
@@ -2963,9 +2963,16 @@ zpool_do_list(int argc, char **argv)
 		if (count != 0 && --count == 0)
 			break;
 
+		pool_list_free(list);
 		(void) sleep(interval);
 	}
 
+	if (argc == 0 && !cb.cb_scripted && pool_list_count(list) == 0) {
+		(void) printf(gettext("no pools available\n"));
+		ret = 0;
+	}
+
+	pool_list_free(list);
 	zprop_free_list(cb.cb_proplist);
 	return (ret);
 }
