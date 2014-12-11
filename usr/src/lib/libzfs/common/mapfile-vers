@@ -246,6 +246,7 @@ SYMBOL_VERSION SUNWprivate_1.1 {
 	zprop_width;
 	zvol_check_dump_config;
 	zvol_volsize_to_reservation;
+	compute_refreservation_from_volsize;
     local:
 	*;
 };

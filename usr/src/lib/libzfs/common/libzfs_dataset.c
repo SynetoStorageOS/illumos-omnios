@@ -1274,18 +1274,15 @@ badlabel:
 			    ZFS_PROP_VOLSIZE);
 			uint64_t blocksize = zfs_prop_get_int(zhp,
 			    ZFS_PROP_VOLBLOCKSIZE);
+			uint64_t max_required_refreservation = zvol_volsize_to_reservation(volsize, nvl);
 			char buf[64];
 
 			switch (prop) {
-			case ZFS_PROP_RESERVATION:
 			case ZFS_PROP_REFRESERVATION:
-				if (intval > volsize) {
-					zfs_error_aux(hdl, dgettext(TEXT_DOMAIN,
-					    "'%s' is greater than current "
-					    "volume size"), propname);
-					(void) zfs_error(hdl, EZFS_BADPROP,
-					    errbuf);
-					goto error;
+				if (intval > max_required_refreservation) {
+					(void) fprintf(stderr,
+					    "WARNING: '%s' is greater than current "
+					    "maximum calculated refreservation '%lld'\n", propname, max_required_refreservation);
 				}
 				break;
 
@@ -4573,22 +4570,11 @@ zfs_get_holds(zfs_handle_t *zhp, nvlist_t **nvl)
  * suite's shell version in reservation.kshlib.
  */
 uint64_t
-zvol_volsize_to_reservation(uint64_t volsize, nvlist_t *props)
+compute_refreservation_from_volsize(uint64_t volsize, int ncopies, uint64_t volblocksize)
 {
 	uint64_t numdb;
-	uint64_t nblocks, volblocksize;
-	int ncopies;
-	char *strval;
+	uint64_t nblocks;
 
-	if (nvlist_lookup_string(props,
-	    zfs_prop_to_name(ZFS_PROP_COPIES), &strval) == 0)
-		ncopies = atoi(strval);
-	else
-		ncopies = 1;
-	if (nvlist_lookup_uint64(props,
-	    zfs_prop_to_name(ZFS_PROP_VOLBLOCKSIZE),
-	    &volblocksize) != 0)
-		volblocksize = ZVOL_DEFAULT_BLOCKSIZE;
 	nblocks = volsize/volblocksize;
 	/* start with metadnode L0-L6 */
 	numdb = 7;
@@ -4608,4 +4594,23 @@ zvol_volsize_to_reservation(uint64_t volsize, nvlist_t *props)
 	numdb *= 1ULL << DN_MAX_INDBLKSHIFT;
 	volsize += numdb;
 	return (volsize);
+}
+
+uint64_t
+zvol_volsize_to_reservation(uint64_t volsize, nvlist_t *props)
+{
+	uint64_t volblocksize;
+	int ncopies;
+	char *strval;
+
+	if (nvlist_lookup_string(props,
+	    zfs_prop_to_name(ZFS_PROP_COPIES), &strval) == 0)
+		ncopies = atoi(strval);
+	else
+		ncopies = 1;
+	if (nvlist_lookup_uint64(props,
+	    zfs_prop_to_name(ZFS_PROP_VOLBLOCKSIZE),
+	    &volblocksize) != 0)
+		volblocksize = ZVOL_DEFAULT_BLOCKSIZE;
+	return (compute_refreservation_from_volsize(volsize, ncopies, volblocksize));
 }
