@@ -3186,3 +3186,7 @@ usr/src/uts/intel/sha2/sha256-x86_64.s
 usr/src/uts/intel/sha2/sha512-x86_64.s
 usr/src/uts/intel/sockfs/nl7ctokgen.h
 usr/src/uts/intel/uathfw/uathbin
+.cproject
+.project
+usr/src/uts/.cproject
+usr/src/uts/.project
