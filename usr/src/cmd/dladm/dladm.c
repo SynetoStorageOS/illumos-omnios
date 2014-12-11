@@ -665,8 +665,8 @@ typedef struct link_fields_buf_s {
 	char link_class[DLADM_STRSIZE];
 	char link_mtu[11];
 	char link_state[DLADM_STRSIZE];
-	char link_bridge[MAXLINKNAMELEN];
-	char link_over[MAXLINKNAMELEN];
+	char link_bridge[DLADM_TOPOLOGY_STRSIZE];
+	char link_over[DLADM_TOPOLOGY_STRSIZE];
 	char link_phys_state[DLADM_STRSIZE];
 	char link_phys_media[DLADM_STRSIZE];
 	char link_phys_speed[DLADM_STRSIZE];

@@ -42,6 +42,7 @@ extern "C" {
 
 #define	LINKID_STR_WIDTH	10
 #define	DLADM_STRSIZE		256
+#define	DLADM_TOPOLOGY_STRSIZE	512
 
 /*
  * option flags taken by the libdladm functions
