@@ -2589,7 +2589,7 @@ process_dependency_pg(scf_propertygroup_t *pg, struct deppg_info *info)
 	fmri_sz = strlen(info->v->gv_name) + 1 + len + 1;
 	fmri = startd_alloc(fmri_sz);
 
-	(void) snprintf(fmri, max_scf_name_size, "%s>%s", info->v->gv_name,
+	(void) snprintf(fmri, fmri_sz, "%s>%s", info->v->gv_name,
 	    pg_name);
 
 	/* Validate the pg before modifying the graph */
