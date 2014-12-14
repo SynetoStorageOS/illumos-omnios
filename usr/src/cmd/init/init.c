@@ -697,7 +697,7 @@ main(int argc, char *argv[])
 		    "\n\n%s Release %s Version %s %d-bit\r\n",
 		    un.sysname, un.release, un.version, bits);
 		console(B_FALSE,
-		    "Copyright (c) 1983, 2010, Oracle and/or its affiliates."
+		    "Copyright (c) 2010-2015, Syneto LTD."
 		    " All rights reserved.\r\n");
 	}
 
