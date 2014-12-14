@@ -19,6 +19,7 @@
  * CDDL HEADER END
  */
 /*
+ * Copyright 2011 Nexenta Systems, Inc.  All rights reserved.
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  */
 
@@ -98,7 +99,7 @@ smb_oplock_init(void)
 	    offsetof(smb_oplock_break_t, ob_lnd));
 
 	smb_thread_init(&smb_oplock_thread, "smb_thread_oplock_break",
-	    smb_oplock_break_thread, NULL);
+	    smb_oplock_break_thread, NULL, smbsrv_notify_pri);
 
 	rc = smb_thread_start(&smb_oplock_thread);
 	if (rc != 0) {
@@ -192,7 +193,7 @@ smb_oplock_uninstall_fem(smb_node_t *node)
  * - op->op_oplock_levelII is B_FALSE (LEVEL_II not supported by open cmd.
  * - LEVEL_II oplocks are not supported for the session
  * - a BATCH oplock is requested on a named stream
- * - there are any range locks on the node
+ * - there are any range locks on the node (SMB writers)
  * Otherwise, grant LEVEL_II.
  *
  * ol->ol_xthread is set to the current thread to lock the oplock against
@@ -214,6 +215,7 @@ smb_oplock_acquire(smb_request_t *sr, smb_node_t *node, smb_ofile_t *ofile)
 	SMB_OFILE_VALID(ofile);
 
 	ASSERT(node == SMB_OFILE_GET_NODE(ofile));
+	ASSERT(RW_LOCK_HELD(&node->n_lock));
 
 	op = &sr->sr_open;
 	tree = SMB_OFILE_GET_TREE(ofile);
@@ -233,25 +235,27 @@ smb_oplock_acquire(smb_request_t *sr, smb_node_t *node, smb_ofile_t *ofile)
 	mutex_enter(&ol->ol_mutex);
 	smb_oplock_wait(node);
 
-	nbl_start_crit(node->vp, RW_READER);
-
 	if ((node->n_open_count > 1) ||
 	    (node->n_opening_count > 1) ||
 	    smb_vop_other_opens(node->vp, ofile->f_mode)) {
+		/*
+		 * There are other opens.
+		 */
 		if ((!op->op_oplock_levelII) ||
 		    (!smb_session_levelII_oplocks(session)) ||
 		    (smb_oplock_exclusive_grant(grants) != NULL) ||
-		    (smb_range_check(sr, node, 0, UINT64_MAX, B_TRUE) != 0)) {
+		    (smb_lock_range_access(sr, node, 0, 0, B_FALSE))) {
+			/*
+			 * LevelII (shared) oplock not allowed,
+			 * so reply with "none".
+			 */
 			op->op_oplock_level = SMB_OPLOCK_NONE;
-			nbl_end_crit(node->vp);
 			mutex_exit(&ol->ol_mutex);
 			return;
 		}
 
 		op->op_oplock_level = SMB_OPLOCK_LEVEL_II;
 	}
-
-	nbl_end_crit(node->vp);
 
 	og = smb_oplock_set_grant(ofile, op->op_oplock_level);
 	if (smb_oplock_insert_grant(node, og) != 0) {

@@ -20,7 +20,7 @@
  */
 /*
  * Copyright (c) 2008, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright 2012 Nexenta Systems, Inc.  All rights reserved.
+ * Copyright 2013 Nexenta Systems, Inc.  All rights reserved.
  */
 
 /*
@@ -186,7 +186,6 @@ typedef struct {
 	smb_audit_record_node_t	anb_records[SMB_AUDIT_BUF_MAX_REC];
 } smb_audit_buf_node_t;
 
-#define	SMB_WORKER_PRIORITY	99
 /*
  * Thread State Machine
  * --------------------
@@ -261,6 +260,7 @@ typedef struct _smb_thread {
 	kt_did_t		sth_did;
 	smb_thread_ep_t		sth_ep;
 	void			*sth_ep_arg;
+	pri_t			sth_pri;
 	boolean_t		sth_kill;
 	kmutex_t		sth_mtx;
 	kcondvar_t		sth_cv;
@@ -589,27 +589,6 @@ typedef struct smb_vfs {
 	vnode_t			*sv_rootvp;
 } smb_vfs_t;
 
-/*
- * Solaris file systems handle timestamps differently from NTFS.
- * In order to provide a more similar view of an open file's
- * timestamps, we cache the timestamps in the node and manipulate
- * them in a manner more consistent with windows.
- * t_cached is B_TRUE when timestamps are cached.
- * Timestamps remain cached while there are open ofiles for the node.
- * This includes open ofiles for named streams.  t_open_ofiles is a
- * count of open ofiles on the node, including named streams' ofiles,
- * n_open_count cannot be used as it doesn't include ofiles opened
- * for the node's named streams.
- */
-typedef struct smb_times {
-	uint32_t		t_open_ofiles;
-	boolean_t		t_cached;
-	timestruc_t		t_atime;
-	timestruc_t		t_mtime;
-	timestruc_t		t_ctime;
-	timestruc_t		t_crtime;
-} smb_times_t;
-
 #define	SMB_NODE_MAGIC		0x4E4F4445	/* 'NODE' */
 #define	SMB_NODE_VALID(p)	ASSERT((p)->n_magic == SMB_NODE_MAGIC)
 
@@ -639,10 +618,8 @@ typedef struct smb_node {
 	uint32_t		n_opening_count;
 	smb_llist_t		n_ofile_list;
 	smb_llist_t		n_lock_list;
-	struct smb_ofile	*readonly_creator;
+	uint32_t		n_pending_dosattr;
 	volatile int		flags;
-	volatile int		waiting_event;
-	smb_times_t		n_timestamps;
 	u_offset_t		n_allocsz;
 	smb_node_fcn_t		n_fcn;
 	smb_oplock_t		n_oplock;
@@ -882,6 +859,8 @@ struct smb_sign {
 #define	SMB_SESSION_VALID(p)	\
     ASSERT(((p) != NULL) && ((p)->s_magic == SMB_SESSION_MAGIC))
 
+#define	SMB_CHALLENGE_SZ	8
+
 typedef enum {
 	SMB_SESSION_STATE_INITIALIZED = 0,
 	SMB_SESSION_STATE_DISCONNECTED,
@@ -929,7 +908,9 @@ typedef struct smb_session {
 	smb_slist_t		s_req_list;
 	smb_llist_t		s_xa_list;
 	smb_llist_t		s_user_list;
+	smb_llist_t		s_tree_list;
 	smb_idpool_t		s_uid_pool;
+	smb_idpool_t		s_tid_pool;
 	smb_txlst_t		s_txlst;
 
 	volatile uint32_t	s_tree_cnt;
@@ -939,7 +920,7 @@ typedef struct smb_session {
 	uint16_t		secmode;
 	uint32_t		sesskey;
 	uint32_t		challenge_len;
-	unsigned char		challenge_key[8];
+	unsigned char		challenge_key[SMB_CHALLENGE_SZ];
 	unsigned char		MAC_key[44];
 	int64_t			activity_timestamp;
 	/*
@@ -996,9 +977,6 @@ typedef struct smb_user {
 	cred_t			*u_cred;
 	cred_t			*u_privcred;
 
-	smb_llist_t		u_tree_list;
-	smb_idpool_t		u_tid_pool;
-
 	uint32_t		u_refcnt;
 	uint32_t		u_flags;
 	uint32_t		u_privileges;
@@ -1049,7 +1027,11 @@ typedef struct smb_tree {
 
 	struct smb_server	*t_server;
 	smb_session_t		*t_session;
-	smb_user_t		*t_user;
+	/*
+	 * user whose uid was in the tree connect message
+	 * ("owner" in MS-CIFS parlance, see section 2.2.1.6 definition of FID)
+	 */
+	smb_user_t		*t_owner;
 	smb_node_t		*t_snode;
 
 	smb_llist_t		t_ofile_list;
@@ -1120,30 +1102,21 @@ typedef struct smb_tree {
 
 /*
  * SMB_OFILE_IS_READONLY reflects whether an ofile is readonly or not.
- * The macro takes into account
- *      - the tree readonly state
- *      - the node readonly state
- *      - whether the specified ofile is the readonly creator
- * The readonly creator has write permission until the ofile is closed.
+ * The macro takes into account read-only settings in any of:
+ * the tree, the node (pending) and the file-system object.
+ * all of this is evaluated in smb_ofile_open() and after that
+ * we can just test the f_flags & SMB_OFLAGS_READONLY
  */
-
-#define	SMB_OFILE_IS_READONLY(of)                               \
-	(((of)->f_flags & SMB_OFLAGS_READONLY) ||               \
-	smb_node_file_is_readonly((of)->f_node) ||                   \
-	(((of)->f_node->readonly_creator) &&                    \
-	((of)->f_node->readonly_creator != (of))))
+#define	SMB_OFILE_IS_READONLY(of)	\
+	((of)->f_flags & SMB_OFLAGS_READONLY)
 
 /*
  * SMB_PATHFILE_IS_READONLY indicates whether or not a file is
- * readonly when the caller has a path rather than an ofile.  Unlike
- * SMB_OFILE_IS_READONLY, the caller cannot be the readonly creator,
- * since that requires an ofile.
+ * readonly when the caller has a path rather than an ofile.
  */
-
-#define	SMB_PATHFILE_IS_READONLY(sr, node)                       \
-	(SMB_TREE_IS_READONLY((sr)) ||                           \
-	smb_node_file_is_readonly((node)) ||                          \
-	((node)->readonly_creator))
+#define	SMB_PATHFILE_IS_READONLY(sr, node)			\
+	(SMB_TREE_IS_READONLY((sr)) ||				\
+	smb_node_file_is_readonly((node)))
 
 #define	SMB_OPIPE_MAGIC		0x50495045	/* 'PIPE' */
 #define	SMB_OPIPE_VALID(p)	\
@@ -1190,18 +1163,12 @@ typedef struct smb_opipe {
  *   DELETE_ON_CLOSE bit of the CreateOptions is set. If any
  *   open file instance has this bit set, the NODE_FLAGS_DELETE_ON_CLOSE
  *   will be set for the file node upon close.
- *
- *	SMB_OFLAGS_TIMESTAMPS_PENDING
- *   This flag gets set when a write operation is performed on the
- *   ofile. The timestamps will be updated, and the flags cleared,
- *   when the ofile gets closed or a setattr is performed on the ofile.
  */
 
 #define	SMB_OFLAGS_READONLY		0x0001
 #define	SMB_OFLAGS_EXECONLY		0x0002
 #define	SMB_OFLAGS_SET_DELETE_ON_CLOSE	0x0004
 #define	SMB_OFLAGS_LLF_POS_VALID	0x0008
-#define	SMB_OFLAGS_TIMESTAMPS_PENDING	0x0010
 
 #define	SMB_OFILE_MAGIC 	0x4F464C45	/* 'OFLE' */
 #define	SMB_OFILE_VALID(p)	\
@@ -1242,7 +1209,8 @@ typedef struct smb_ofile {
 	int			f_mode;
 	cred_t			*f_cr;
 	pid_t			f_pid;
-	uint32_t		f_explicit_times;
+	smb_attr_t		f_pending_attr;
+	boolean_t		f_written;
 	char			f_quota_resume[SMB_SID_STRSZ];
 	smb_oplock_grant_t	f_oplock_grant;
 } smb_ofile_t;
@@ -1294,6 +1262,7 @@ typedef struct smb_odir {
 	list_node_t		d_lnd;
 	smb_odir_state_t	d_state;
 	smb_session_t		*d_session;
+	smb_user_t		*d_user;
 	smb_tree_t		*d_tree;
 	smb_node_t		*d_dnode;
 	cred_t			*d_cred;
@@ -1670,7 +1639,7 @@ typedef struct smb_request {
 		smb_arg_dirop_t		dirop;
 		smb_arg_open_t		open;
 		smb_rw_param_t		*rw;
-		uint32_t		timestamp;
+		int32_t			timestamp;
 	} arg;
 
 	cred_t			*user_cr;
@@ -1759,6 +1728,10 @@ typedef struct smb_xa {
 
 	char			*xa_pipe_name;
 
+	/*
+	 * These are the param and data count received so far,
+	 * used to decide if the whole trans is here yet.
+	 */
 	int			req_disp_param;
 	int			req_disp_data;
 
@@ -1819,10 +1792,9 @@ typedef struct smb_cmd_threshold {
 	kmutex_t		ct_mutex;
 	volatile uint32_t	ct_active_cnt;
 	volatile uint32_t	ct_blocked_cnt;
-	volatile uint32_t	ct_error_cnt;
 	uint32_t		ct_threshold;
-	struct smb_event	*ct_event;
-	uint32_t		ct_event_id;
+	uint32_t		ct_timeout; /* milliseconds */
+	kcondvar_t		ct_cond;
 } smb_cmd_threshold_t;
 
 typedef struct {

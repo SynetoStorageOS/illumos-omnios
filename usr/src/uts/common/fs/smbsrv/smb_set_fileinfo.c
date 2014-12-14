@@ -216,7 +216,7 @@ smb_com_set_information2(smb_request_t *sr)
 static int
 smb_set_by_fid(smb_request_t *sr, smb_xa_t *xa, uint16_t infolev)
 {
-	int rc;
+	int rc = 0;
 	smb_setinfo_t sinfo;
 
 	if (SMB_TREE_IS_READONLY(sr)) {

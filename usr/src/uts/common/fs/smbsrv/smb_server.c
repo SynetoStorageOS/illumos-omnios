@@ -240,7 +240,8 @@ static void smb_event_cancel(smb_server_t *, uint32_t);
 static uint32_t smb_event_alloc_txid(void);
 
 static void smb_server_disconnect_share(smb_llist_t *, const char *);
-static void smb_server_enum_private(smb_llist_t *, smb_svcenum_t *);
+static void smb_server_enum_users(smb_llist_t *, smb_svcenum_t *);
+static void smb_server_enum_trees(smb_llist_t *, smb_svcenum_t *);
 static int smb_server_session_disconnect(smb_llist_t *, const char *,
     const char *);
 static int smb_server_fclose(smb_llist_t *, uint32_t);
@@ -396,8 +397,8 @@ smb_server_create(void)
 	sv->si_cache_event = kmem_cache_create("smb_event_cache",
 	    sizeof (smb_event_t), 8, NULL, NULL, NULL, NULL, NULL, 0);
 
-	smb_thread_init(&sv->si_thread_timers,
-	    "smb_timers", smb_server_timers, sv);
+	smb_thread_init(&sv->si_thread_timers, "smb_timers",
+	    smb_server_timers, sv, smbsrv_timer_pri);
 
 	sv->sv_pid = curproc->p_pid;
 	smb_srqueue_init(&sv->sv_srqueue);
@@ -410,19 +411,19 @@ smb_server_create(void)
 	cv_init(&sv->sv_cv, NULL, CV_DEFAULT, NULL);
 	cv_init(&sv->sp_info.sp_cv, NULL, CV_DEFAULT, NULL);
 
+	smb_threshold_init(&sv->sv_ssetup_ct, SMB_SSETUP_CMD,
+	    smb_ssetup_threshold, smb_ssetup_timeout);
+	smb_threshold_init(&sv->sv_tcon_ct, SMB_TCON_CMD,
+	    smb_tcon_threshold, smb_tcon_timeout);
+	smb_threshold_init(&sv->sv_opipe_ct, SMB_OPIPE_CMD,
+	    smb_opipe_threshold, smb_opipe_timeout);
+
 	sv->sv_state = SMB_SERVER_STATE_CREATED;
 	sv->sv_magic = SMB_SERVER_MAGIC;
 	sv->sv_zid = zid;
 
 	smb_llist_insert_tail(&smb_servers, sv);
 	smb_llist_exit(&smb_servers);
-
-	smb_threshold_init(&sv->sv_ssetup_ct, SMB_SSETUP_CMD,
-	    smb_ssetup_threshold, smb_ssetup_timeout);
-	smb_threshold_init(&sv->sv_tcon_ct, SMB_TCON_CMD, smb_tcon_threshold,
-	    smb_tcon_timeout);
-	smb_threshold_init(&sv->sv_opipe_ct, SMB_OPIPE_CMD, smb_opipe_threshold,
-	    smb_opipe_timeout);
 
 	return (0);
 }
@@ -442,10 +443,6 @@ smb_server_delete(void)
 	rc = smb_server_lookup(&sv);
 	if (rc != 0)
 		return (rc);
-
-	smb_threshold_fini(&sv->sv_ssetup_ct);
-	smb_threshold_fini(&sv->sv_tcon_ct);
-	smb_threshold_fini(&sv->sv_opipe_ct);
 
 	mutex_enter(&sv->sv_mutex);
 	switch (sv->sv_state) {
@@ -482,6 +479,10 @@ smb_server_delete(void)
 	smb_llist_enter(&smb_servers, RW_WRITER);
 	smb_llist_remove(&smb_servers, sv);
 	smb_llist_exit(&smb_servers);
+
+	smb_threshold_fini(&sv->sv_ssetup_ct);
+	smb_threshold_fini(&sv->sv_tcon_ct);
+	smb_threshold_fini(&sv->sv_opipe_ct);
 
 	smb_server_listener_destroy(&sv->sv_nbt_daemon);
 	smb_server_listener_destroy(&sv->sv_tcp_daemon);
@@ -575,12 +576,12 @@ smb_server_start(smb_ioc_start_t *ioc)
 		smb_codepage_init();
 
 		sv->sv_worker_pool = taskq_create("smb_workers",
-		    sv->sv_cfg.skc_maxworkers, SMB_WORKER_PRIORITY,
+		    sv->sv_cfg.skc_maxworkers, smbsrv_worker_pri,
 		    sv->sv_cfg.skc_maxworkers, INT_MAX,
 		    TASKQ_DYNAMIC|TASKQ_PREPOPULATE);
 
 		sv->sv_receiver_pool = taskq_create("smb_receivers",
-		    sv->sv_cfg.skc_maxconnections, SMB_WORKER_PRIORITY,
+		    sv->sv_cfg.skc_maxconnections, smbsrv_receive_pri,
 		    sv->sv_cfg.skc_maxconnections, INT_MAX,
 		    TASKQ_DYNAMIC);
 
@@ -833,15 +834,6 @@ smb_server_enum(smb_ioc_svcenum_t *ioc)
 	smb_server_t	*sv;
 	int		rc;
 
-	switch (svcenum->se_type) {
-	case SMB_SVCENUM_TYPE_USER:
-	case SMB_SVCENUM_TYPE_TREE:
-	case SMB_SVCENUM_TYPE_FILE:
-		break;
-	default:
-		return (EINVAL);
-	}
-
 	if ((rc = smb_server_lookup(&sv)) != 0)
 		return (rc);
 
@@ -849,11 +841,26 @@ smb_server_enum(smb_ioc_svcenum_t *ioc)
 	svcenum->se_bused = 0;
 	svcenum->se_nitems = 0;
 
-	smb_server_enum_private(&sv->sv_nbt_daemon.ld_session_list, svcenum);
-	smb_server_enum_private(&sv->sv_tcp_daemon.ld_session_list, svcenum);
+	switch (svcenum->se_type) {
+	case SMB_SVCENUM_TYPE_USER:
+		smb_server_enum_users(&sv->sv_nbt_daemon.ld_session_list,
+		    svcenum);
+		smb_server_enum_users(&sv->sv_tcp_daemon.ld_session_list,
+		    svcenum);
+		break;
+	case SMB_SVCENUM_TYPE_TREE:
+	case SMB_SVCENUM_TYPE_FILE:
+		smb_server_enum_trees(&sv->sv_nbt_daemon.ld_session_list,
+		    svcenum);
+		smb_server_enum_trees(&sv->sv_tcp_daemon.ld_session_list,
+		    svcenum);
+		break;
+	default:
+		rc = EINVAL;
+	}
 
 	smb_server_release(sv);
-	return (0);
+	return (rc);
 }
 
 /*
@@ -1461,7 +1468,8 @@ smb_server_listener_init(
 
 	smb_llist_constructor(&ld->ld_session_list, sizeof (smb_session_t),
 	    offsetof(smb_session_t, s_lnd));
-	smb_thread_init(&ld->ld_thread, name, smb_server_listener, ld);
+	smb_thread_init(&ld->ld_thread, name, smb_server_listener, ld,
+	    smbsrv_listen_pri);
 	ld->ld_magic = SMB_LISTENER_MAGIC;
 }
 
@@ -1694,7 +1702,7 @@ smb_server_release(smb_server_t *sv)
  * Enumerate the users associated with a session list.
  */
 static void
-smb_server_enum_private(smb_llist_t *ll, smb_svcenum_t *svcenum)
+smb_server_enum_users(smb_llist_t *ll, smb_svcenum_t *svcenum)
 {
 	smb_session_t	*sn;
 	smb_llist_t	*ulist;
@@ -1714,12 +1722,56 @@ smb_server_enum_private(smb_llist_t *ll, smb_svcenum_t *svcenum)
 			if (smb_user_hold(user)) {
 				rc = smb_user_enum(user, svcenum);
 				smb_user_release(user);
+				if (rc != 0)
+					break;
 			}
 
 			user = smb_llist_next(ulist, user);
 		}
 
 		smb_llist_exit(ulist);
+
+		if (rc != 0)
+			break;
+
+		sn = smb_llist_next(ll, sn);
+	}
+
+	smb_llist_exit(ll);
+}
+
+/*
+ * Enumerate the trees/files associated with a session list.
+ */
+static void
+smb_server_enum_trees(smb_llist_t *ll, smb_svcenum_t *svcenum)
+{
+	smb_session_t	*sn;
+	smb_llist_t	*tlist;
+	smb_tree_t	*tree;
+	int		rc = 0;
+
+	smb_llist_enter(ll, RW_READER);
+	sn = smb_llist_head(ll);
+
+	while (sn != NULL) {
+		SMB_SESSION_VALID(sn);
+		tlist = &sn->s_tree_list;
+		smb_llist_enter(tlist, RW_READER);
+		tree = smb_llist_head(tlist);
+
+		while (tree != NULL) {
+			if (smb_tree_hold(tree)) {
+				rc = smb_tree_enum(tree, svcenum);
+				smb_tree_release(tree);
+				if (rc != 0)
+					break;
+			}
+
+			tree = smb_llist_next(tlist, tree);
+		}
+
+		smb_llist_exit(tlist);
 
 		if (rc != 0)
 			break;
@@ -1796,8 +1848,8 @@ static int
 smb_server_fclose(smb_llist_t *ll, uint32_t uniqid)
 {
 	smb_session_t	*sn;
-	smb_llist_t	*ulist;
-	smb_user_t	*user;
+	smb_llist_t	*tlist;
+	smb_tree_t	*tree;
 	int		rc = ENOENT;
 
 	smb_llist_enter(ll, RW_READER);
@@ -1805,20 +1857,20 @@ smb_server_fclose(smb_llist_t *ll, uint32_t uniqid)
 
 	while ((sn != NULL) && (rc == ENOENT)) {
 		SMB_SESSION_VALID(sn);
-		ulist = &sn->s_user_list;
-		smb_llist_enter(ulist, RW_READER);
-		user = smb_llist_head(ulist);
+		tlist = &sn->s_tree_list;
+		smb_llist_enter(tlist, RW_READER);
+		tree = smb_llist_head(tlist);
 
-		while ((user != NULL) && (rc == ENOENT)) {
-			if (smb_user_hold(user)) {
-				rc = smb_user_fclose(user, uniqid);
-				smb_user_release(user);
+		while ((tree != NULL) && (rc == ENOENT)) {
+			if (smb_tree_hold(tree)) {
+				rc = smb_tree_fclose(tree, uniqid);
+				smb_tree_release(tree);
 			}
 
-			user = smb_llist_next(ulist, user);
+			tree = smb_llist_next(tlist, tree);
 		}
 
-		smb_llist_exit(ulist);
+		smb_llist_exit(tlist);
 		sn = smb_llist_next(ll, sn);
 	}
 
@@ -1977,6 +2029,7 @@ smb_event_wait(smb_event_t *event)
 {
 	int	seconds = 1;
 	int	ticks;
+	int	err;
 
 	if (event == NULL)
 		return (EINVAL);
@@ -2006,11 +2059,12 @@ smb_event_wait(smb_event_t *event)
 		++event->se_waittime;
 	}
 
+	err = event->se_errno;
 	event->se_waittime = 0;
 	event->se_notified = B_FALSE;
 	cv_signal(&event->se_cv);
 	mutex_exit(&event->se_mutex);
-	return (event->se_errno);
+	return (err);
 }
 
 /*
