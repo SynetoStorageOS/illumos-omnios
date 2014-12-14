@@ -208,7 +208,7 @@ DRV_KMODS	+= audiosolo
 DRV_KMODS	+= audiots
 DRV_KMODS	+= audiovia823x
 DRV_KMODS_32	+= audiovia97
-DRV_KMODS	+= bl 
+DRV_KMODS	+= bl
 DRV_KMODS	+= blkdev
 DRV_KMODS	+= bge
 DRV_KMODS	+= bofi
@@ -279,7 +279,7 @@ DRV_KMODS	+= mm
 DRV_KMODS	+= mouse8042
 DRV_KMODS	+= mpt_sas
 DRV_KMODS	+= mr_sas
-DRV_KMODS	+= mwl 
+DRV_KMODS	+= mwl
 DRV_KMODS	+= nca
 DRV_KMODS	+= nsmb
 DRV_KMODS	+= nulldriver
@@ -366,8 +366,9 @@ DRV_KMODS	+= qlt
 DRV_KMODS	+= iscsit
 DRV_KMODS	+= pppt
 DRV_KMODS	+= ncall nsctl sdbc nskern sv
-DRV_KMODS	+= ii rdc rdcsrv rdcstub 
+DRV_KMODS	+= ii rdc rdcsrv rdcstub
 DRV_KMODS	+= iptun
+DRV_KMODS   += vmxnet3s
 
 #
 # Common code drivers
@@ -489,7 +490,7 @@ DRV_KMODS	+= dcam1394
 #	InfiniBand pseudo drivers
 #
 DRV_KMODS	+= ib ibp eibnx eoib rdsib sdp iser daplt hermon tavor sol_ucma sol_uverbs
-DRV_KMODS	+= sol_umad 
+DRV_KMODS	+= sol_umad
 
 #
 #	LVM modules
