@@ -2789,6 +2789,7 @@ static int
 zio_checksum_verify(zio_t *zio)
 {
 	zio_bad_cksum_t info;
+	zio_bad_cksum_t *infop = NULL;
 	blkptr_t *bp = zio->io_bp;
 	int error;
 
@@ -2807,10 +2808,14 @@ zio_checksum_verify(zio_t *zio)
 
 	if ((error = zio_checksum_error(zio, &info)) != 0) {
 		zio->io_error = error;
+		/* If error is not ECKSUM, info is not allocated, and leads to
+		 * a panic in zfs_ereport_start_checksum
+		 */
+		if (error == ECKSUM) infop = &info;
 		if (!(zio->io_flags & ZIO_FLAG_SPECULATIVE)) {
 			zfs_ereport_start_checksum(zio->io_spa,
 			    zio->io_vd, zio, zio->io_offset,
-			    zio->io_size, NULL, &info);
+			    zio->io_size, NULL, infop);
 		}
 	}
 
