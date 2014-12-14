@@ -38,7 +38,31 @@ fi
 
 # Start the dlmgmtd daemon.
 /sbin/dlmgmtd
-if [ $? = 0 ]; then
+DLMGMTD_STATUS=$?
+
+# Wait for datalink management to properly start
+TIMEOUT=10
+CONF=/etc/physical-mac-addresses.conf
+TMPCONF=/tmp/physical-mac-addresses.conf
+while true; do
+	# Read physical mac address information and ignore VirtualBox mac addresses (that use the unregistered MAC OUI 08:00:27)
+	ADDRESSES=$(/usr/sbin/dladm show-phys -p -m -o ADDRESS 2>/dev/null | grep -v '^8:0:27:' | /usr/gnu/bin/sort | tee $TMPCONF)
+	if [ ! -z "$ADDRESSES" ]; then
+		# Do not use the file if aggregates are present (i.e. we have duplicates in the generated mac addresses file)
+		if /usr/gnu/bin/uniq $TMPCONF | /usr/gnu/bin/diff $TMPCONF - >/dev/null 2>&1; then
+			mv $TMPCONF $CONF
+		fi
+		break
+	fi
+	if [ "$TIMEOUT" == "0" ]; then
+		break
+	else
+		((TIMEOUT--))
+	fi
+	sleep 1
+done
+
+if [ $DLMGMTD_STATUS = 0 ]; then
 	exit $SMF_EXIT_OK
 else
 	exit $SMF_EXIT_ERR_FATAL
