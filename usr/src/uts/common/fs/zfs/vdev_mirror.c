@@ -231,6 +231,8 @@ vdev_mirror_child_select(zio_t *zio)
 		if (c >= mm->mm_children)
 			c = 0;
 		mc = &mm->mm_child[c];
+		if (mc->mc_vd == NULL)
+			continue;
 		if (mc->mc_tried || mc->mc_skipped)
 			continue;
 		if (!vdev_readable(mc->mc_vd)) {
@@ -251,7 +253,7 @@ vdev_mirror_child_select(zio_t *zio)
 	 * Look for any child we haven't already tried before giving up.
 	 */
 	for (c = 0; c < mm->mm_children; c++)
-		if (!mm->mm_child[c].mc_tried)
+		if (!mm->mm_child[c].mc_tried && mm->mm_child[c].mc_vd != NULL)
 			return (c);
 
 	/*
@@ -279,6 +281,8 @@ vdev_mirror_io_start(zio_t *zio)
 			 */
 			for (c = 0; c < mm->mm_children; c++) {
 				mc = &mm->mm_child[c];
+				if (mc->mc_vd == NULL)
+					continue;
 				zio_nowait(zio_vdev_child_io(zio, zio->io_bp,
 				    mc->mc_vd, mc->mc_offset,
 				    zio_buf_alloc(zio->io_size), zio->io_size,
@@ -304,6 +308,8 @@ vdev_mirror_io_start(zio_t *zio)
 
 	while (children--) {
 		mc = &mm->mm_child[c];
+		if (mc->mc_vd == NULL)
+			continue;
 		zio_nowait(zio_vdev_child_io(zio, zio->io_bp,
 		    mc->mc_vd, mc->mc_offset, zio->io_data, zio->io_size,
 		    zio->io_type, zio->io_priority, 0,
