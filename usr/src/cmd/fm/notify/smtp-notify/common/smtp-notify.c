@@ -41,9 +41,11 @@
 #include <fm/fmd_msg.h>
 #include <fm/libfmevent.h>
 #include "libfmnotify.h"
+#include <sys/wait.h>
 
 #define	SENDMAIL	"/usr/sbin/sendmail"
 #define	SVCNAME		"system/fm/smtp-notify"
+#define SYNETO_FMA_PUBLISHER        "/usr/sbin/fma-publisher"
 
 #define	XHDR_HOSTNAME		"X-FMEV-HOSTNAME"
 #define	XHDR_CLASS		"X-FMEV-CLASS"
@@ -360,6 +362,32 @@ send_email(nd_hdl_t *nhdl, const char *headers, const char *body,
 }
 
 static void
+notify_syn_fma_publisher(nd_hdl_t *nhdl, nd_ev_info_t *ev_info,
+    const char *headers, const char *body)
+{
+	char fma_publish_cmd[PATH_MAX];
+	FILE *syn_fma_pub;
+
+	nd_debug(nhdl, "Notifying Syneto fma publisher for event: %s",
+	    ev_info->ei_uuid);
+
+	if ((syn_fma_pub = popen(SYNETO_FMA_PUBLISHER, "w")) == NULL) {
+		nd_error(nhdl, "Failed to open pipe to %s (%s)",
+		    SYNETO_FMA_PUBLISHER, strerror(errno));
+		return;
+	}
+	if (fprintf(syn_fma_pub, "%s", headers) < 0)
+		nd_error(nhdl, "Failed to write to pipe (%s)",
+		    strerror(errno));
+
+	if (fprintf(syn_fma_pub, "%s\n.\n", body) < 0)
+		nd_error(nhdl, "Failed to write to pipe (%s)",
+		    strerror(errno));
+
+	(void) pclose(syn_fma_pub);
+}
+
+static void
 send_email_template(nd_hdl_t *nhdl, nd_ev_info_t *ev_info, email_pref_t *eprefs)
 {
 	char *msg, *headers;
@@ -651,6 +679,7 @@ irpt_cbfunc(fmev_t ev, const char *class, nvlist_t *nvl, void *arg)
 	 * Everything is ready, so now we just iterate through the list of
 	 * recipents, sending an email notification to each one.
 	 */
+	notify_syn_fma_publisher(nhdl, ev_info, headers, body);
 	for (int i = 0; i < eprefs->ep_num_recips; i++)
 		send_email(nhdl, headers, body, eprefs->ep_recips[i]);
 
@@ -752,6 +781,7 @@ listev_cb(fmev_t ev, const char *class, nvlist_t *nvl, void *arg)
 	if (build_headers(nhdl, ev_info, eprefs, &headers) != 0)
 		goto listcb_done;
 
+	notify_syn_fma_publisher(nhdl, ev_info, headers, body);
 	/*
 	 * Everything is ready, so now we just iterate through the list of
 	 * recipents, sending an email notification to each one.
@@ -853,21 +883,6 @@ main(int argc, char *argv[])
 		nd_abort(nhdl, "failed to initialize libfmevent: %s",
 		    fmev_strerror(fmev_errno));
 	}
-
-	/*
-	 * If we're in the global zone, reset all of our privilege sets to
-	 * the minimum set of required privileges.  Since we've already
-	 * initialized our libmevent handle, we no no longer need to run as
-	 * root, so we change our uid/gid to noaccess (60002).
-	 *
-	 * __init_daemon_priv will also set the process core path for us
-	 *
-	 */
-	if (getzoneid() == GLOBAL_ZONEID)
-		if (__init_daemon_priv(
-		    PU_RESETGROUPS | PU_LIMITPRIVS | PU_INHERITPRIVS,
-		    60002, 60002, PRIV_PROC_SETID, NULL) != 0)
-			nd_abort(nhdl, "additional privileges required to run");
 
 	nhdl->nh_msghdl = fmd_msg_init(nhdl->nh_rootdir, FMD_MSG_VERSION);
 	if (nhdl->nh_msghdl == NULL)
