@@ -683,9 +683,6 @@ idm_status_t
 iscsit_conn_reinstate(iscsit_conn_t *existing_ict, iscsit_conn_t *ict);
 
 void
-iscsit_conn_destroy_done(iscsit_conn_t *ict);
-
-void
 iscsit_conn_set_auth(iscsit_conn_t *ict);
 
 void

@@ -1208,6 +1208,7 @@ iscsit_conn_accept(idm_conn_t *ic)
 	mutex_init(&ict->ict_mutex, NULL, MUTEX_DRIVER, NULL);
 	mutex_init(&ict->ict_statsn_mutex, NULL, MUTEX_DRIVER, NULL);
 	idm_refcnt_init(&ict->ict_refcnt, ict);
+	idm_refcnt_init(&ict->ict_dispatch_refcnt, ict);
 
 	/*
 	 * Initialize login state machine
@@ -1369,13 +1370,10 @@ iscsit_conn_destroy(idm_conn_t *ic)
 
 	/* Generate session state machine event */
 	if (ict->ict_sess != NULL) {
-		/*
-		 * Session state machine will call iscsit_conn_destroy_done()
-		 * when it has removed references to this connection.
-		 */
 		iscsit_sess_sm_event(ict->ict_sess, SE_CONN_FAIL, ict);
 	}
 
+	idm_refcnt_wait_ref(&ict->ict_dispatch_refcnt);
 	idm_refcnt_wait_ref(&ict->ict_refcnt);
 	/*
 	 * The session state machine does not need to post
@@ -1391,6 +1389,7 @@ iscsit_conn_destroy(idm_conn_t *ic)
 	iscsit_text_cmd_fini(ict);
 
 	mutex_destroy(&ict->ict_mutex);
+	idm_refcnt_destroy(&ict->ict_dispatch_refcnt);
 	idm_refcnt_destroy(&ict->ict_refcnt);
 	kmem_free(ict, sizeof (*ict));
 

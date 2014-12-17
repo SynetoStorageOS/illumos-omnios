@@ -21,6 +21,7 @@
 /*
  * Copyright (c) 2008, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2013 by Delphix. All rights reserved.
+ * Copyright 2011 Nexenta Systems, Inc.  All rights reserved.
  */
 #ifndef	_STMF_H
 #define	_STMF_H
@@ -416,6 +417,9 @@ boolean_t stmf_scsilib_tptid_compare(struct scsi_transport_id *,
     struct scsi_transport_id *);
 struct stmf_remote_port *stmf_remote_port_alloc(uint16_t);
 void stmf_remote_port_free(struct stmf_remote_port *);
+struct stmf_lu *stmf_check_and_hold_lu(struct scsi_task *task, uint8_t *guid);
+void stmf_release_lu(struct stmf_lu *lu);
+int stmf_is_task_being_aborted(struct scsi_task *task);
 #ifdef	__cplusplus
 }
 #endif

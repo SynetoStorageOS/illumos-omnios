@@ -59,6 +59,7 @@ MODSTUBS_DIR	 = $(OBJS_DIR)
 LDFLAGS		+= -dy -Ndrv/stmf -Nfs/zfs
 
 INC_PATH	+= -I$(UTSBASE)/common/fs/zfs
+INC_PATH	+= -I$(UTSBASE)/common/io/comstar/lu/stmf_sbd
 
 C99MODE=	-xc99=%all
 C99LMODE=	-Xc99=%all
