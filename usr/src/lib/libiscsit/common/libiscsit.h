@@ -48,11 +48,11 @@ extern "C" {
 #define	IS_EUI_NAME(s) (strncmp((s), "eui.", 4) == 0)
 
 /*
- * We change the default IQN here to org.illumos.
+ * We change the default IQN here to eu.syneto.
  * Other distros using it need to change accordingly.
  */
 
-#define	DEFAULT_IQN	"iqn.2010-08.org.illumos:"
+#define	DEFAULT_IQN	"iqn.2015-01.eu.syneto:"
 
 /*
  * Object Hierarchy
