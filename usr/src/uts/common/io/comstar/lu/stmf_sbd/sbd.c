@@ -48,6 +48,8 @@
 #include <sys/stmf_ioctl.h>
 #include <sys/stmf_sbd_ioctl.h>
 
+#include <sys/smbios.h>
+
 #include "stmf_sbd.h"
 #include "sbd_impl.h"
 
@@ -272,6 +274,11 @@ sbd_getinfo(dev_info_t *dip, ddi_info_cmd_t cmd, void *arg, void **result)
 static int
 sbd_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 {
+	smbios_hdl_t *shp;
+	id_t id;
+	smbios_system_t sys;
+	smbios_info_t info;
+
 	switch (cmd) {
 	case DDI_ATTACH:
 		sbd_dip = dip;
@@ -281,6 +288,15 @@ sbd_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 			break;
 		}
 		ddi_report_dev(dip);
+
+		/* Set COMSTAR product ID to system product ID. */
+		if ((shp = smbios_open(NULL, SMB_VERSION, 0, NULL)) != NULL) {
+			if ((id = smbios_info_system(shp, &sys)) != SMB_ERR &&
+			    smbios_info_common(shp, id, &info) != SMB_ERR)
+				snprintf(sbd_product_id, 17, "%s%16s", info.smbi_product, "");
+				smbios_close(shp);
+		}
+
 		return (DDI_SUCCESS);
 	}
 
