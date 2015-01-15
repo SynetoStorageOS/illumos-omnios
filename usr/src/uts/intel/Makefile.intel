@@ -394,7 +394,7 @@ DRV_KMODS	+= ipmi
 DRV_KMODS	+= iprb
 DRV_KMODS	+= ixgbe
 DRV_KMODS	+= vr
-
+DRV_KMODS	+= sfxge
 #
 # Virtio drivers
 #
