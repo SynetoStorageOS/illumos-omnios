@@ -365,7 +365,6 @@ static void
 notify_syn_fma_publisher(nd_hdl_t *nhdl, nd_ev_info_t *ev_info,
     const char *headers, const char *body)
 {
-	char fma_publish_cmd[PATH_MAX];
 	FILE *syn_fma_pub;
 
 	nd_debug(nhdl, "Notifying Syneto fma publisher for event: %s",
