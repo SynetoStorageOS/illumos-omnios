@@ -1631,6 +1631,19 @@ file system is created.
 The \fBcasesensitivity\fR, \fBnormalization\fR, and \fButf8only\fR properties
 are also new permissions that can be assigned to non-privileged users by using
 the \fBZFS\fR delegated administration feature.
+.RE
+.sp
+.ne 2
+.mk
+.na
+\fB\fBoverlay\fR=\fBon\fR | \fBoff\fR\fR
+.ad
+.sp .6
+.RS 4n
+Allow mounting on a busy directory or a directory which already contains files/directories.
+This is the default mount behavior for Linux filesystems. This is also the default for ZFS
+on Syneto Storage OS. Beware that this changes the previous default on Solaris and Illumos.
+.RE
 .SS "Temporary Mount Point Properties"
 .LP
 When a file system is mounted, either through \fBmount\fR(1M) for legacy mounts
