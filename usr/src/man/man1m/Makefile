@@ -107,6 +107,7 @@ _MANFILES=	6to4relay.1m		\
 		dhcpconfig.1m		\
 		dhcpmgr.1m		\
 		dhtadm.1m		\
+		diskinfo.1m		\
 		disks.1m		\
 		diskscan.1m		\
 		dispadmin.1m		\
