@@ -58,7 +58,7 @@ typedef struct di_phys {
     const char *dp_dev;
     const char *dp_serial;
     const char *dp_slotname;
-    int dp_chassis;
+    char *dp_chassis;
     int dp_slot;
     int dp_faulty;
     int dp_locate;
@@ -184,7 +184,16 @@ disk_walker(topo_hdl_t *hp, tnode_t *np, void *arg)
 	pp->dp_slot = topo_node_instance(pnp);
     }
 
-    pp->dp_chassis = topo_node_instance(ppnp);
+    char *new_dp_chassis;
+    if ( pp->dp_chassis == NULL ) {
+	asprintf(&new_dp_chassis, "%d", topo_node_instance(ppnp));
+    } else {
+	asprintf(&new_dp_chassis, "%s:%d", pp->dp_chassis, topo_node_instance(ppnp));
+    }
+    if (pp->dp_chassis) {
+	free(pp->dp_chassis);
+    }
+    pp->dp_chassis = new_dp_chassis;
 
     return (TOPO_WALK_TERMINATE);
 }
@@ -196,7 +205,7 @@ populate_physical(topo_hdl_t *hp, di_phys_t *pp)
     topo_walk_t *wp;
 
     pp->dp_faulty = pp->dp_locate = -1;
-    pp->dp_chassis = pp->dp_slot = -1;
+    pp->dp_slot = -1;
 
     err = 0;
     wp = topo_walk_init(hp, FM_FMRI_SCHEME_HC, disk_walker, pp, &err);
@@ -330,11 +339,11 @@ enumerate_disks(di_opts_t *opts)
 	}
 
 	if (opts->di_parseable) {
-	    (void) snprintf(slotname, sizeof (slotname), "%d,%d",
+	    (void) snprintf(slotname, sizeof (slotname), "%s,%d",
 	        phys.dp_chassis, phys.dp_slot);
 	} else if (phys.dp_slotname != NULL) {
 	    (void) snprintf(slotname, sizeof (slotname),
-	        "[%d] %s", phys.dp_chassis, phys.dp_slotname);
+	        "[%s] %s", phys.dp_chassis, phys.dp_slotname);
 	} else {
 	    slotname[0] = '-';
 	    slotname[1] = '\0';
