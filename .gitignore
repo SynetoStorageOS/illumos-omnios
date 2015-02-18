@@ -3190,3 +3190,4 @@ usr/src/uts/intel/uathfw/uathbin
 .project
 usr/src/uts/.cproject
 usr/src/uts/.project
+.idea
