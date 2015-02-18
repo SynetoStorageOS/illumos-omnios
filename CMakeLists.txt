@@ -20,6 +20,9 @@ include_directories(BEFORE
     usr/src/cmd/stat/common
 
     usr/src/lib/libkstat
+    usr/src/lib/libdiskmgt/common
+    usr/src/lib/fm/topo/libtopo
+    usr/src/lib/fm/topo/modules/common
 )
 
 set(SOURCE_FILES
