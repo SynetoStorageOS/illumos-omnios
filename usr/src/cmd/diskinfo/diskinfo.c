@@ -24,13 +24,8 @@
  */
 
 #include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <errno.h>
 #include <string.h>
 #include <stdio.h>
-#include <unistd.h>
-#include <limits.h>
 #include <assert.h>
 #include <ctype.h>
 #include <stdarg.h>
@@ -38,14 +33,13 @@
 
 #include <libdiskmgt.h>
 #include <sys/nvpair.h>
-#include <sys/param.h>
-#include <sys/ccompile.h>
 
 #include <fm/libtopo.h>
 #include <fm/topo_hc.h>
 #include <fm/topo_list.h>
 #include <sys/fm/protocol.h>
 #include <disk/disk.h>
+#include <stdlib.h>
 
 typedef struct di_opts {
 	boolean_t di_scripted;
@@ -139,11 +133,11 @@ static int disk_walker(topo_hdl_t *hp, tnode_t *np, void *arg) {
 	if (strcmp(topo_node_name(pnp), BAY) == 0) {
 		if (topo_node_facility(hp, pnp, TOPO_FAC_TYPE_INDICATOR, TOPO_FAC_TYPE_ANY, &fl, &err) == 0) {
 			for (lp = topo_list_next(&fl.tf_list); lp != NULL; lp = topo_list_next(lp)) {
-				if (topo_prop_get_uint32(lp->tf_node, TOPO_PGROUP_FACILITY, TOPO_FACILITY_TYPE, &type,
+				if (topo_prop_get_uint32(lp->tf_node, TOPO_PGROUP_FACILITY, TOPO_FACILITY_TYPE, (uint32_t *) &type,
 				                &err) != 0) {
 					continue;
 				}
-				if (topo_prop_get_uint32(lp->tf_node, TOPO_PGROUP_FACILITY, TOPO_LED_MODE, &mode, &err)
+				if (topo_prop_get_uint32(lp->tf_node, TOPO_PGROUP_FACILITY, TOPO_LED_MODE, (uint32_t *) &mode, &err)
 				                != 0) {
 					continue;
 				}
@@ -274,7 +268,7 @@ static void enumerate_disks(di_opts_t *opts) {
 			nvlist_query_string(cattrs, DM_CTYPE, &ctype);
 			ctype = strdup(ctype);
 			for (c = ctype; *c != '\0'; c++)
-				*c = toupper(*c);
+				*c = (char) toupper(*c);
 		}
 
 		/*
@@ -302,7 +296,7 @@ static void enumerate_disks(di_opts_t *opts) {
 		total = size * blocksize;
 
 		if (opts->di_parseable) {
-			(void) snprintf(sizestr, sizeof(sizestr), "%llu", total);
+			(void) snprintf(sizestr, sizeof(sizestr), "%lu", total);
 		} else {
 			total_in_GiB = (double) total / 1024.0 / 1024.0 / 1024.0;
 			(void) snprintf(sizestr, sizeof(sizestr), "%7.2f GiB", total_in_GiB);
@@ -382,7 +376,7 @@ int main(int argc, char *argv[]) {
 	di_opts_t opts = { .di_condensed = B_FALSE, .di_scripted = B_TRUE, .di_physical = B_FALSE, .di_parseable =
 	                B_FALSE };
 
-	while ((c = getopt(argc, argv, ":cHPp")) != EOF) {
+	while ((c = (char) getopt(argc, argv, ":cHPp")) != EOF) {
 		switch (c) {
 		case 'c':
 			if (opts.di_physical) {
