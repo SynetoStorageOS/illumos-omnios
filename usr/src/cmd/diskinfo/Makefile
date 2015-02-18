@@ -10,24 +10,26 @@
 #
 
 #
-# Copyright 2014 <contributor>
+# Copyright (C) 2015 Syneto LTD.
 #
 
 PROG = diskinfo
 
-include ../Makefile.cmd
+OBJS=diskinfo.o diskname_converter.o kstats.o
 
-CPPFLAGS += -I. -I../common -I../../lib/fm/topo/modules/common
-CFLAGS += $(CTF_FLAGS) $(CCVERBOSE) $(XSTRCONST)
-LDLIBS += -L$(ROOT)/usr/lib/fm -ltopo -lnvpair -ldiskmgt
-LDFLAGS += -R/usr/lib/fm
+CPPFLAGS += -I. -I$(ROOT)/usr/include -I../stat/common -I../../lib/fm/topo/modules/common
+CFLAGS += $(CTF_FLAGS) $(CCVERBOSE) $(XSTRCONST) -I${STATCOMMONDIR}
+LDLIBS += -L$(ROOT)/usr/lib/fm -L$(ROOT)/usr/lib -ltopo -lnvpair -ldiskmgt -lkstat -lavl -ldevinfo
+LDFLAGS=-R/usr/lib/fm
 
 all: $(PROG)
+
+$(PROG): $(OBJS)
+	$(LINK.c) -o $@ $(OBJS) $(LDLIBS)
+	$(POST_PROCESS)
 
 install: $(ROOTPROG)
 
 clean:
 
 lint: lint_PROG
-
-include ../Makefile.targ

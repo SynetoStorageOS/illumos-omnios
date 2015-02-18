@@ -3,15 +3,6 @@ project(illumos_omnios)
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
 
-# For kernel development
-#include_directories(BEFORE
-#    usr/src/head
-#    usr/src/common
-
-#    usr/src/uts/common
-#    usr/src/uts/common/sys
-#)
-
 include_directories(BEFORE
     usr/src/head
     usr/src/common
@@ -20,6 +11,7 @@ include_directories(BEFORE
     usr/src/cmd/stat/common
 
     usr/src/lib/libkstat
+    usr/src/lib/libdevinfo
     usr/src/lib/libdiskmgt/common
     usr/src/lib/libsmbios/common
     usr/src/lib/fm/topo/libtopo
@@ -698,6 +690,138 @@ set(SOURCE_FILES
     usr/src/cmd/cmd-inet/usr.bin/ruptime.c
     usr/src/cmd/cmd-inet/usr.bin/rwho.c
     usr/src/cmd/cmd-inet/usr.bin/whois.c
+    usr/src/cmd/cmd-inet/usr.lib/bridged/dlpi.c
+    usr/src/cmd/cmd-inet/usr.lib/bridged/door.c
+    usr/src/cmd/cmd-inet/usr.lib/bridged/events.c
+    usr/src/cmd/cmd-inet/usr.lib/bridged/global.h
+    usr/src/cmd/cmd-inet/usr.lib/bridged/main.c
+    usr/src/cmd/cmd-inet/usr.lib/bridged/rstp.c
+    usr/src/cmd/cmd-inet/usr.lib/dsvclockd/container.c
+    usr/src/cmd/cmd-inet/usr.lib/dsvclockd/container.h
+    usr/src/cmd/cmd-inet/usr.lib/dsvclockd/datastore.c
+    usr/src/cmd/cmd-inet/usr.lib/dsvclockd/datastore.h
+    usr/src/cmd/cmd-inet/usr.lib/dsvclockd/dsvclockd.c
+    usr/src/cmd/cmd-inet/usr.lib/dsvclockd/dsvclockd.h
+    usr/src/cmd/cmd-inet/usr.lib/ilbd/ilb/ilb_probe.c
+    usr/src/cmd/cmd-inet/usr.lib/ilbd/ilbd.h
+    usr/src/cmd/cmd-inet/usr.lib/ilbd/ilbd_hc.c
+    usr/src/cmd/cmd-inet/usr.lib/ilbd/ilbd_main.c
+    usr/src/cmd/cmd-inet/usr.lib/ilbd/ilbd_nat.c
+    usr/src/cmd/cmd-inet/usr.lib/ilbd/ilbd_rules.c
+    usr/src/cmd/cmd-inet/usr.lib/ilbd/ilbd_scf.c
+    usr/src/cmd/cmd-inet/usr.lib/ilbd/ilbd_sg.c
+    usr/src/cmd/cmd-inet/usr.lib/ilbd/ilbd_support.c
+    usr/src/cmd/cmd-inet/usr.lib/in.chargend/in.chargend.c
+    usr/src/cmd/cmd-inet/usr.lib/in.daytimed/in.daytimed.c
+    usr/src/cmd/cmd-inet/usr.lib/in.dhcpd/tests/get_number_test.c
+    usr/src/cmd/cmd-inet/usr.lib/in.dhcpd/tests/mkdstore.c
+    usr/src/cmd/cmd-inet/usr.lib/in.dhcpd/tests/test_client.c
+    usr/src/cmd/cmd-inet/usr.lib/in.dhcpd/tests/test_dstore.c
+    usr/src/cmd/cmd-inet/usr.lib/in.dhcpd/tests/test_per_net.c
+    usr/src/cmd/cmd-inet/usr.lib/in.dhcpd/bootp.c
+    usr/src/cmd/cmd-inet/usr.lib/in.dhcpd/dhcp.c
+    usr/src/cmd/cmd-inet/usr.lib/in.dhcpd/dhcpd.h
+    usr/src/cmd/cmd-inet/usr.lib/in.dhcpd/dhcptab.c
+    usr/src/cmd/cmd-inet/usr.lib/in.dhcpd/encode.c
+    usr/src/cmd/cmd-inet/usr.lib/in.dhcpd/generic.c
+    usr/src/cmd/cmd-inet/usr.lib/in.dhcpd/hash.c
+    usr/src/cmd/cmd-inet/usr.lib/in.dhcpd/hash.h
+    usr/src/cmd/cmd-inet/usr.lib/in.dhcpd/icmp.c
+    usr/src/cmd/cmd-inet/usr.lib/in.dhcpd/interfaces.c
+    usr/src/cmd/cmd-inet/usr.lib/in.dhcpd/interfaces.h
+    usr/src/cmd/cmd-inet/usr.lib/in.dhcpd/logging.c
+    usr/src/cmd/cmd-inet/usr.lib/in.dhcpd/main.c
+    usr/src/cmd/cmd-inet/usr.lib/in.dhcpd/misc.c
+    usr/src/cmd/cmd-inet/usr.lib/in.dhcpd/per_dnet.c
+    usr/src/cmd/cmd-inet/usr.lib/in.dhcpd/per_dnet.h
+    usr/src/cmd/cmd-inet/usr.lib/in.dhcpd/relay.c
+    usr/src/cmd/cmd-inet/usr.lib/in.discardd/in.discardd.c
+    usr/src/cmd/cmd-inet/usr.lib/in.echod/in.echod.c
+    usr/src/cmd/cmd-inet/usr.lib/in.mpathd/mpd_defs.h
+    usr/src/cmd/cmd-inet/usr.lib/in.mpathd/mpd_main.c
+    usr/src/cmd/cmd-inet/usr.lib/in.mpathd/mpd_probe.c
+    usr/src/cmd/cmd-inet/usr.lib/in.mpathd/mpd_tables.c
+    usr/src/cmd/cmd-inet/usr.lib/in.mpathd/mpd_tables.h
+    usr/src/cmd/cmd-inet/usr.lib/in.ndpd/config.c
+    usr/src/cmd/cmd-inet/usr.lib/in.ndpd/defs.h
+    usr/src/cmd/cmd-inet/usr.lib/in.ndpd/main.c
+    usr/src/cmd/cmd-inet/usr.lib/in.ndpd/ndp.c
+    usr/src/cmd/cmd-inet/usr.lib/in.ndpd/tables.c
+    usr/src/cmd/cmd-inet/usr.lib/in.ndpd/tables.h
+    usr/src/cmd/cmd-inet/usr.lib/in.ndpd/trace.c
+    usr/src/cmd/cmd-inet/usr.lib/in.ripngd/defs.h
+    usr/src/cmd/cmd-inet/usr.lib/in.ripngd/if.c
+    usr/src/cmd/cmd-inet/usr.lib/in.ripngd/input.c
+    usr/src/cmd/cmd-inet/usr.lib/in.ripngd/interface.h
+    usr/src/cmd/cmd-inet/usr.lib/in.ripngd/main.c
+    usr/src/cmd/cmd-inet/usr.lib/in.ripngd/output.c
+    usr/src/cmd/cmd-inet/usr.lib/in.ripngd/startup.c
+    usr/src/cmd/cmd-inet/usr.lib/in.ripngd/table.h
+    usr/src/cmd/cmd-inet/usr.lib/in.ripngd/tables.c
+    usr/src/cmd/cmd-inet/usr.lib/in.ripngd/timer.c
+    usr/src/cmd/cmd-inet/usr.lib/in.ripngd/trace.c
+    usr/src/cmd/cmd-inet/usr.lib/in.ripngd/trace.h
+    usr/src/cmd/cmd-inet/usr.lib/in.timed/in.timed.c
+    usr/src/cmd/cmd-inet/usr.lib/inetd/config.c
+    usr/src/cmd/cmd-inet/usr.lib/inetd/contracts.c
+    usr/src/cmd/cmd-inet/usr.lib/inetd/env.c
+    usr/src/cmd/cmd-inet/usr.lib/inetd/inetd.c
+    usr/src/cmd/cmd-inet/usr.lib/inetd/inetd_impl.h
+    usr/src/cmd/cmd-inet/usr.lib/inetd/repval.c
+    usr/src/cmd/cmd-inet/usr.lib/inetd/tlx.c
+    usr/src/cmd/cmd-inet/usr.lib/inetd/util.c
+    usr/src/cmd/cmd-inet/usr.lib/inetd/wait.c
+    usr/src/cmd/cmd-inet/usr.lib/mdnsd/DNSCommon.c
+    usr/src/cmd/cmd-inet/usr.lib/mdnsd/DNSCommon.h
+    usr/src/cmd/cmd-inet/usr.lib/mdnsd/DNSDigest.c
+    usr/src/cmd/cmd-inet/usr.lib/mdnsd/GenLinkedList.c
+    usr/src/cmd/cmd-inet/usr.lib/mdnsd/GenLinkedList.h
+    usr/src/cmd/cmd-inet/usr.lib/mdnsd/mDNS.c
+    usr/src/cmd/cmd-inet/usr.lib/mdnsd/mDNSDebug.c
+    usr/src/cmd/cmd-inet/usr.lib/mdnsd/mDNSDebug.h
+    usr/src/cmd/cmd-inet/usr.lib/mdnsd/mDNSEmbeddedAPI.h
+    usr/src/cmd/cmd-inet/usr.lib/mdnsd/mDNSPosix.c
+    usr/src/cmd/cmd-inet/usr.lib/mdnsd/mDNSPosix.h
+    usr/src/cmd/cmd-inet/usr.lib/mdnsd/mDNSUNP.c
+    usr/src/cmd/cmd-inet/usr.lib/mdnsd/mDNSUNP.h
+    usr/src/cmd/cmd-inet/usr.lib/mdnsd/PlatformCommon.c
+    usr/src/cmd/cmd-inet/usr.lib/mdnsd/PlatformCommon.h
+    usr/src/cmd/cmd-inet/usr.lib/mdnsd/PosixDaemon.c
+    usr/src/cmd/cmd-inet/usr.lib/mdnsd/uDNS.c
+    usr/src/cmd/cmd-inet/usr.lib/mdnsd/uDNS.h
+    usr/src/cmd/cmd-inet/usr.lib/mdnsd/uds_daemon.c
+    usr/src/cmd/cmd-inet/usr.lib/mdnsd/uds_daemon.h
+    usr/src/cmd/cmd-inet/usr.lib/ncaconfd/ncaconfd.c
+    usr/src/cmd/cmd-inet/usr.lib/pppoe/common.c
+    usr/src/cmd/cmd-inet/usr.lib/pppoe/common.h
+    usr/src/cmd/cmd-inet/usr.lib/pppoe/logging.c
+    usr/src/cmd/cmd-inet/usr.lib/pppoe/logging.h
+    usr/src/cmd/cmd-inet/usr.lib/pppoe/options.c
+    usr/src/cmd/cmd-inet/usr.lib/pppoe/pppoec.c
+    usr/src/cmd/cmd-inet/usr.lib/pppoe/pppoed.c
+    usr/src/cmd/cmd-inet/usr.lib/pppoe/pppoed.h
+    usr/src/cmd/cmd-inet/usr.lib/slpd/slpd.c
+    usr/src/cmd/cmd-inet/usr.lib/vrrpd/vrrpd.c
+    usr/src/cmd/cmd-inet/usr.lib/vrrpd/vrrpd_impl.h
+    usr/src/cmd/cmd-inet/usr.lib/wanboot/encr/encr.c
+    usr/src/cmd/cmd-inet/usr.lib/wanboot/hmac/hmac.c
+    usr/src/cmd/cmd-inet/usr.lib/wanboot/ickey/ickey.c
+    usr/src/cmd/cmd-inet/usr.lib/wanboot/keygen/keygen.c
+    usr/src/cmd/cmd-inet/usr.lib/wanboot/keymgmt/keymgmt.c
+    usr/src/cmd/cmd-inet/usr.lib/wanboot/netbootinfo/netbootinfo.c
+    usr/src/cmd/cmd-inet/usr.lib/wanboot/p12split/p12split.c
+    usr/src/cmd/cmd-inet/usr.lib/wanboot/wanboot-cgi/wanboot-cgi.c
+    usr/src/cmd/cmd-inet/usr.lib/wpad/driver.h
+    usr/src/cmd/cmd-inet/usr.lib/wpad/driver_wifi.c
+    usr/src/cmd/cmd-inet/usr.lib/wpad/eloop.c
+    usr/src/cmd/cmd-inet/usr.lib/wpad/eloop.h
+    usr/src/cmd/cmd-inet/usr.lib/wpad/l2_packet.c
+    usr/src/cmd/cmd-inet/usr.lib/wpad/l2_packet.h
+    usr/src/cmd/cmd-inet/usr.lib/wpad/wpa.c
+    usr/src/cmd/cmd-inet/usr.lib/wpad/wpa_enc.c
+    usr/src/cmd/cmd-inet/usr.lib/wpad/wpa_enc.h
+    usr/src/cmd/cmd-inet/usr.lib/wpad/wpa_impl.h
+    usr/src/cmd/cmd-inet/usr.lib/wpad/wpa_supplicant.c
     usr/src/cmd/cmd-inet/usr.sadm/dhcpmgr/lib/class_cache.c
     usr/src/cmd/cmd-inet/usr.sadm/dhcpmgr/lib/class_cache.h
     usr/src/cmd/cmd-inet/usr.sadm/dhcpmgr/lib/dd_misc.c
@@ -1067,6 +1191,10 @@ set(SOURCE_FILES
     usr/src/cmd/dis/dis_util.c
     usr/src/cmd/dis/dis_util.h
     usr/src/cmd/diskinfo/diskinfo.c
+    usr/src/cmd/diskinfo/diskname_converter.c
+    usr/src/cmd/diskinfo/diskname_converter.h
+    usr/src/cmd/diskinfo/kstats.c
+    usr/src/cmd/diskinfo/kstats.h
     usr/src/cmd/diskscan/diskscan.c
     usr/src/cmd/dispadmin/dispadmin.c
     usr/src/cmd/dispadmin/dispadmin.h
