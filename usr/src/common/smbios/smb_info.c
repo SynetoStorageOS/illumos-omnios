@@ -211,7 +211,9 @@ smbios_info_smbios(smbios_hdl_t *shp, smbios_entry_t *ep)
 
 #ifndef _KERNEL
 static char smbios_product_override[256];
+static char smbios_manufacturer_override[256];
 static boolean_t smbios_product_checked;
+static boolean_t smbios_manufacturer_checked;
 #endif
 
 int
@@ -256,6 +258,19 @@ smbios_info_common(smbios_hdl_t *shp, id_t id, smbios_info_t *ip)
 
 		if (smbios_product_override[0] != '\0')
 			ip->smbi_product = smbios_product_override;
+
+		if (!smbios_manufacturer_checked) {
+			int fd = open("/etc/smbios_manufacturer", O_RDONLY);
+			if (fd >= 0) {
+				(void) read(fd, smbios_manufacturer_override,
+				    sizeof (smbios_manufacturer_override) - 1);
+				(void) close(fd);
+			}
+			smbios_manufacturer_checked = B_TRUE;
+		}
+
+		if (smbios_manufacturer_override[0] != '\0')
+			ip->smbi_manufacturer = smbios_manufacturer_override;
 	}
 #endif
 

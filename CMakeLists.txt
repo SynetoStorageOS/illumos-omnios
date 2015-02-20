@@ -21,6 +21,7 @@ include_directories(BEFORE
 
     usr/src/lib/libkstat
     usr/src/lib/libdiskmgt/common
+    usr/src/lib/libsmbios/common
     usr/src/lib/fm/topo/libtopo
     usr/src/lib/fm/topo/modules/common
 )
