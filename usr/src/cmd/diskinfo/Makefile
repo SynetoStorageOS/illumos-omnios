@@ -17,6 +17,9 @@ PROG = diskinfo
 
 OBJS=diskinfo.o diskname_converter.o kstats.o
 
+include ../Makefile.cmd
+include ../Makefile.ctf
+
 CPPFLAGS += -I. -I$(ROOT)/usr/include -I../stat/common -I../../lib/fm/topo/modules/common
 CFLAGS += $(CTF_FLAGS) $(CCVERBOSE) $(XSTRCONST) -I${STATCOMMONDIR}
 LDLIBS += -L$(ROOT)/usr/lib/fm -L$(ROOT)/usr/lib -ltopo -lnvpair -ldiskmgt -lkstat -lavl -ldevinfo

@@ -352,6 +352,7 @@ typedef enum {
 #define	DM_CTYPE_SCSI		"scsi"
 #define	DM_CTYPE_FIBRE		"fibre channel"
 #define	DM_CTYPE_USB		"usb"
+#define	DM_CTYPE_SATA		"sata"
 #define	DM_CTYPE_UNKNOWN	"unknown"
 
 /* media */

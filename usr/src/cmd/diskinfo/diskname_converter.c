@@ -137,8 +137,8 @@ drvinstunitpart2dev(char *driver, int instunit, char *part,
     char **devpathp, char **adevpathp, char **devidp) {
 	int instance;
 	minor_match_t **mma;
-	minor_match_t *mm;
-	char *devpath;
+	minor_match_t *mm = NULL;
+	char *devpath = NULL;
 	char *devid;
 	char *a, *s;
 	int mdsetno;

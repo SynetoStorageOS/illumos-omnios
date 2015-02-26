@@ -31,6 +31,7 @@ long get_error_counter_by_serial_number(char const *serial, char *error_counter_
 	kstat_ctl_t *ks_ctl;
 	char *kstat_sds[MAX_KSTAT_SDS];
 	int kstat_sd_instance = 0;
+	int i = 0;
 
 	if (!serial) {
 		return -1;
@@ -44,7 +45,7 @@ long get_error_counter_by_serial_number(char const *serial, char *error_counter_
 		}
 	}
 
-	for (int i = 0; i < kstat_sd_instance; i++) {
+	for (i = 0; i < kstat_sd_instance; i++) {
 		if (strcmp(getKStatString(ks_ctl, "sderr", kstat_sds[i], "Serial No"), serial)) {
 			return getKStatNumber(ks_ctl, "sderr", kstat_sds[i], error_counter_name);
 		}

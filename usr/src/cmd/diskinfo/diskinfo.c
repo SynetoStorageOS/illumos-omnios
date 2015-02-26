@@ -106,9 +106,9 @@ static char condensed_tristate(int val, char c) {
 }
 
 static void populate_serial_numbers(di_phys_t *phys) {
-	if (phys->dp_serial == NULL) {
-		disk_list_t *dlist = lookup_dsk_name(phys->dp_dev);
-		if (dlist) {
+	disk_list_t *dlist = lookup_dsk_name(phys->dp_dev);
+	if (dlist) {
+		if (phys->dp_serial == NULL) {
 			phys->dp_serial = getSerialNumber(dlist->ks_name);
 		}
 	}
@@ -292,6 +292,7 @@ static void enumerate_disks(di_opts_t *opts) {
 			removable = B_TRUE;
 
 		ssd = B_FALSE;
+
 		if (nvlist_lookup_boolean(dattrs, DM_SOLIDSTATE) == 0)
 			ssd = B_TRUE;
 
@@ -301,6 +302,8 @@ static void enumerate_disks(di_opts_t *opts) {
 			ctype = strdup(ctype);
 			for (c = ctype; *c != '\0'; c++)
 				*c = (char) toupper(*c);
+
+
 		}
 
 		/*
@@ -313,6 +316,7 @@ static void enumerate_disks(di_opts_t *opts) {
 		else
 			(void) strlcpy(device, opath, sizeof(device));
 		len = strlen(device);
+
 		if (device[len - 2] == 's' && (device[len - 1] >= '0' && device[len - 1] <= '9'))
 			device[len - 2] = '\0';
 

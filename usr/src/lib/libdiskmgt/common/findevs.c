@@ -1138,6 +1138,11 @@ ctype(di_node_t node, di_minor_t minor)
 		return (DM_CTYPE_ATA);
 	}
 
+    if(libdiskmgt_str_eq(type, DDI_NT_SATA_NEXUS) ||
+            libdiskmgt_str_eq(type, DDI_NT_SATA_ATTACHMENT_POINT)) {
+        return (DM_CTYPE_SATA);
+    }
+
 	return (DM_CTYPE_UNKNOWN);
 }
 
