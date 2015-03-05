@@ -362,9 +362,9 @@ static void enumerate_disks(di_opts_t *opts) {
 			    display_string(phys.dp_serial), sizestr, statestr, slotname,
 			    display_tristate(removable), display_tristate(ssd),
 			    display_tristate(phys.dp_faulty), display_tristate(phys.dp_locate),
-			    get_error_counter_by_serial_number(phys.dp_serial, "Soft Errors"),
-			    get_error_counter_by_serial_number(phys.dp_serial, "Hard Errors"),
-			    get_error_counter_by_serial_number(phys.dp_serial, "Transport Errors")
+			    get_error_counter_by_serial_number((phys.dp_serial == NULL) ? "" : phys.dp_serial, "Soft Errors"),
+			    get_error_counter_by_serial_number((phys.dp_serial == NULL) ? "" : phys.dp_serial, "Hard Errors"),
+			    get_error_counter_by_serial_number((phys.dp_serial == NULL) ? "" : phys.dp_serial, "Transport Errors")
 			);
 		} else if (opts->di_physical) {
 			if (!opts->di_scripted) {
