@@ -6,7 +6,12 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
 include_directories(BEFORE
     usr/src/head
     usr/src/common
+
     usr/src/uts/common
+    usr/src/uts/common/sys
+    usr/src/uts/common/fs/zfs
+
+    usr/src/common/zfs
 
     usr/src/cmd/stat/common
 
@@ -14,8 +19,13 @@ include_directories(BEFORE
     usr/src/lib/libdevinfo
     usr/src/lib/libdiskmgt/common
     usr/src/lib/libsmbios/common
+    usr/src/lib/libuutil/common
+    usr/src/lib/libuuid/common
+    usr/src/lib/libzfs_core/common
+
     usr/src/lib/fm/topo/libtopo
     usr/src/lib/fm/topo/modules/common
+
 )
 
 set(SOURCE_FILES
