@@ -17,11 +17,23 @@ include_directories(BEFORE
 
     usr/src/lib/libkstat
     usr/src/lib/libdevinfo
+    usr/src/lib/libnvpair
+    usr/src/lib/libbsm
+
     usr/src/lib/libdiskmgt/common
     usr/src/lib/libsmbios/common
     usr/src/lib/libuutil/common
     usr/src/lib/libuuid/common
     usr/src/lib/libzfs_core/common
+    usr/src/lib/libzfs/common
+    usr/src/lib/libdlpi/common
+    usr/src/lib/libdladm/common
+    usr/src/lib/libinetutil/common
+    usr/src/lib/libvrrpadm/common
+    usr/src/lib/librstp/common
+    usr/src/lib/libipadm/common
+    usr/src/lib/libdhcpagent/common
+    usr/src/lib/libsocket/common
 
     usr/src/lib/fm/topo/libtopo
     usr/src/lib/fm/topo/modules/common
