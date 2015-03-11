@@ -21,6 +21,7 @@
 
 #
 # Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
+# Copyright 2015 Syneto LTD.  All rights reserved.
 # Use is subject to license terms.
 #
 
@@ -49,7 +50,8 @@ i386_SUBDIRS = i86pc \
 		SUNW,Sun-Fire-X4500 \
 		SUNW,Sun-Fire-X4540 \
 		SUNW,Sun-Fire-X4600-M2 \
-		Joyent,Joyent-Compute-Platform-1101
+		Joyent,Joyent-Compute-Platform-1101 \
+		Syneto,Syneto-ARK-110
 
 SUBDIRS = $($(MACH)_SUBDIRS)
 
