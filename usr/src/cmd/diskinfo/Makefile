@@ -34,5 +34,6 @@ $(PROG): $(OBJS)
 install: $(ROOTPROG)
 
 clean:
+	rm -f $(PROG) $(OBJS)
 
 lint: lint_PROG

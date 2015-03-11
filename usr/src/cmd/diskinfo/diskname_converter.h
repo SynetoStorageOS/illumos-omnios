@@ -49,9 +49,9 @@ typedef struct {
 void *safe_alloc(size_t size);
 char *safe_strdup(char *str);
 
-static char *mdsetno2name(int setno);
-static int drvinstunitpart2dev(char *driver, int instunit, char *part, char **devpathp, char **adevpathp, char **devidp);
-static int drvpid2port(uint_t pid, char **target_portp);
+char *mdsetno2name(int setno);
+int drvinstunitpart2dev(char *driver, int instunit, char *part, char **devpathp, char **adevpathp, char **devidp);
+int drvpid2port(uint_t pid, char **target_portp);
 disk_list_t *lookup_ks_name(char *ks_name, int want_devid);
 disk_list_t *lookup_dsk_name(const char *dsk_name);
 
