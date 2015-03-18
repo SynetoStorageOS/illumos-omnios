@@ -41,6 +41,10 @@
 #include <disk/disk.h>
 #include <stdlib.h>
 
+#include <config_admin.h>
+#include <sys/param.h>
+
+
 #include "diskname_converter.h"
 #include "kstats.h"
 
@@ -233,10 +237,13 @@ static void populate_physical(topo_hdl_t *hp, di_phys_t *pp) {
 static void enumerate_disks(di_opts_t *opts) {
 	topo_hdl_t *hp;
 	dm_descriptor_t *media;
-	int err, i;
+	int err, j, i;
 	int filter[] = {DM_DT_FIXED, -1};
 	dm_descriptor_t *disk, *controller;
 	nvlist_t *mattrs, *dattrs, *cattrs = NULL;
+	cfga_err_t p;
+	cfga_list_data_t	*lista;
+	int nr;
 
 	uint64_t size, total;
 	uint32_t blocksize;
@@ -268,6 +275,8 @@ static void enumerate_disks(di_opts_t *opts) {
 	if (err != 0) {
 		fatal(-1, "unable to hold topo snapshot: %s", topo_strerror(err));
 	}
+
+	p = config_list_ext(0, NULL, &lista, &nr, NULL, NULL, NULL, CFGA_FLAG_LIST_ALL);
 
 	for (i = 0; media != NULL && media[i] != NULL; i++) {
 		if ((disk = dm_get_associated_descriptors(media[i], DM_DRIVE, &err)) == NULL) {
@@ -339,7 +348,17 @@ static void enumerate_disks(di_opts_t *opts) {
 		}
 
 		if (opts->di_parseable) {
-			(void) snprintf(slotname, sizeof(slotname), "%s,%d", phys.dp_chassis, phys.dp_slot);
+			for(j=0; j<nr; j++)
+							if(strstr(lista[j].ap_log_id, phys.dp_dev)!=NULL && strstr(lista[j].ap_class, "sata")!=NULL )
+							{
+								(void) snprintf(slotname, sizeof(slotname), "sata%c,%d", lista[j].ap_log_id[4], phys.dp_slot);
+								break;
+							}
+			if(j>=nr)
+			{
+				(void) snprintf(slotname, sizeof(slotname), "%s,%d", phys.dp_chassis, phys.dp_slot);
+			}
+
 		} else if (phys.dp_slotname != NULL) {
 			(void) snprintf(slotname, sizeof(slotname), "[%s] %s", phys.dp_chassis, phys.dp_slotname);
 		} else {
@@ -403,13 +422,26 @@ static void enumerate_disks(di_opts_t *opts) {
 		dm_free_descriptors(controller);
 		dm_free_descriptors(disk);
 	}
-
+	free(lista);
 	dm_free_descriptors(media);
 	topo_snap_release(hp);
 	topo_close(hp);
 }
+/*
+static void print_cfgadm(void)
+{
+	cfga_err_t p;
+	cfga_list_data_t	*lista;
 
+	int nr,i;
+	p = config_list_ext(0, NULL, &lista, &nr, NULL, NULL, NULL, CFGA_FLAG_LIST_ALL);
+	for(i=0; i<nr; i++)
+	{
+		printf("Ap_log_id='%s',  Ap_phys_id='%s'\n", lista[i].ap_log_id, lista[i].ap_phys_id);
+	}
 
+}
+*/
 int main(int argc, char *argv[]) {
 	char c;
 
@@ -461,6 +493,6 @@ int main(int argc, char *argv[]) {
 	}
 
 	enumerate_disks(&opts);
-
+	//print_cfgadm();
 	return (0);
 }

@@ -2698,7 +2698,7 @@ do_list_common_impl(
 				}
 			}
 
-			if (*(lstatp->errstr) != NULL) {
+			if ((lstatp->errstr != NULL) && *(lstatp->errstr) != NULL) {
 				free(*(lstatp->errstr));
 				*(lstatp->errstr) = NULL;
 			}
