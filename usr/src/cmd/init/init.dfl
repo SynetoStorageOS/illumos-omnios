@@ -31,3 +31,4 @@
 #
 TZ=UTC
 CMASK=022
+LANG=C
