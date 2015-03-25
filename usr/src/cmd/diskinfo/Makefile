@@ -31,8 +31,10 @@ $(PROG): $(OBJS)
 	$(LINK.c) -o $@ $(OBJS) $(LDLIBS)
 	$(POST_PROCESS)
 
-install: $(ROOTPROG)
+install: all $(ROOTPROG)
 
 clean:
 
 lint: lint_PROG
+
+include ../Makefile.targ

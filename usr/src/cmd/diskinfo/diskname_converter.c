@@ -88,7 +88,7 @@ safe_alloc(size_t size) {
  * that point to "shared/setno" - the name of such a symlink is the setname.
  * The caller is responsible for freeing the returned string.
  */
-static char *
+char *
 mdsetno2name(int setno) {
 	char setlink[MAXPATHLEN + 1];
 	char link[MAXPATHLEN + 1];
@@ -132,7 +132,7 @@ mdsetno2name(int setno) {
 	return (mdsetname);
 }
 
-static int
+int
 drvinstunitpart2dev(char *driver, int instunit, char *part,
     char **devpathp, char **adevpathp, char **devidp) {
 	int instance;
@@ -300,7 +300,7 @@ drvinstunitpart2dev(char *driver, int instunit, char *part,
 	return (1);                                /* success */
 }
 
-static int
+int
 drvpid2port(uint_t pid, char **target_portp) {
 	sv_iocdata_t ioc;
 	char target_port[MAXNAMELEN];
@@ -337,7 +337,6 @@ drvpid2port(uint_t pid, char **target_portp) {
 disk_list_t *
 lookup_dsk_name(const char *dsk_name) {
 	kstat_ctl_t *ks_ctl;
-	int kstat_sd_instance = 0;
 	disk_list_t *matching_dlist = NULL;
 
 	kstat_t *ks_p;
