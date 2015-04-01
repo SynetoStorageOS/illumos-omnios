@@ -111,9 +111,10 @@ static char condensed_tristate(int val, char c) {
 
 static void populate_serial_numbers(di_phys_t *phys) {
 	disk_list_t *dlist = lookup_dsk_name(phys->dp_dev);
+
 	if (dlist) {
 		if (phys->dp_serial == NULL) {
-			phys->dp_serial = getSerialNumber(dlist->ks_name);
+			phys->dp_serial = strdup(getSerialNumber(dlist->ks_name));
 		}
 	}
 }
@@ -427,21 +428,7 @@ static void enumerate_disks(di_opts_t *opts) {
 	topo_snap_release(hp);
 	topo_close(hp);
 }
-/*
-static void print_cfgadm(void)
-{
-	cfga_err_t p;
-	cfga_list_data_t	*lista;
 
-	int nr,i;
-	p = config_list_ext(0, NULL, &lista, &nr, NULL, NULL, NULL, CFGA_FLAG_LIST_ALL);
-	for(i=0; i<nr; i++)
-	{
-		printf("Ap_log_id='%s',  Ap_phys_id='%s'\n", lista[i].ap_log_id, lista[i].ap_phys_id);
-	}
-
-}
-*/
 int main(int argc, char *argv[]) {
 	char c;
 
