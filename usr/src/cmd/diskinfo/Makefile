@@ -22,8 +22,8 @@ include ../Makefile.ctf
 
 CPPFLAGS += -I. -I$(ROOT)/usr/include -I../stat/common -I../../lib/fm/topo/modules/common
 CFLAGS += $(CTF_FLAGS) $(CCVERBOSE) $(XSTRCONST) -I${STATCOMMONDIR}
-LDLIBS += -L$(ROOT)/usr/lib/fm -L$(ROOT)/usr/lib -ltopo -lnvpair -ldiskmgt -lkstat -lavl -ldevinfo -lcfgadm
-LDFLAGS=-R/usr/lib/fm
+LDLIBS += -L$(ROOT)/usr/lib/fm -L$(ROOT)/usr/lib -ltopo -lnvpair -ldiskmgt -lkstat -ldevinfo -lcfgadm
+LDFLAGS= $(LDFLAGS) -R/usr/lib/fm
 
 all: $(PROG)
 
