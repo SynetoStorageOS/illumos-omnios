@@ -60,7 +60,7 @@ while true; do
 	fi
 
 	echo "Can't get mac addresses right now. We found no mac addresses."
-    echo "Timeout in $TIMEOUT seconds"
+	echo "Timeout in $TIMEOUT seconds"
 
 	if [ "$TIMEOUT" == "0" ]; then
 		break
