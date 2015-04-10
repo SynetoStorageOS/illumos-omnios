@@ -21,7 +21,7 @@
 
 /*
  * Copyright (c) 2008, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright 2014 Nexenta Systems, Inc. All rights reserved.
+ * Copyright 2015 Nexenta Systems, Inc. All rights reserved.
  * Copyright (c) 2013 by Delphix. All rights reserved.
  */
 
@@ -121,6 +121,7 @@ uint16_t sbd_mgmt_url_alloc_size = 0;
 krwlock_t sbd_global_prop_lock;
 
 static char sbd_name[] = "sbd";
+int sbd_dump_state_log = 0;
 
 static struct cb_ops sbd_cb_ops = {
 	sbd_open,			/* open */
@@ -1461,6 +1462,7 @@ sbd_populate_and_register_lu(sbd_lu_t *sl, uint32_t *err_ret)
 	lu->lu_dbuf_free = sbd_dbuf_free;
 	lu->lu_ctl = sbd_ctl;
 	lu->lu_info = sbd_info;
+	lu->lu_task_done = sbd_task_done;
 	sl->sl_state = STMF_STATE_OFFLINE;
 
 	if ((ret = stmf_register_lu(lu)) != STMF_SUCCESS) {
@@ -3734,6 +3736,11 @@ sbd_unmap(sbd_lu_t *sl, uint64_t offset, uint64_t length)
 	if (!(sl->sl_flags & SL_ZFS_META))
 		return (EIO);
 
+	/*
+	 * TODO: unmap performance may be improved by not doing the synchronous
+	 * removal of the blocks and writing of the metadata.  The
+	 * transaction is in the zil so the state should be stable.
+	 */
 	df.df_flags = (sl->sl_flags & SL_WRITEBACK_CACHE_DISABLE) ?
 	    DF_WAIT_SYNC : 0;
 	df.df_start = offset;
@@ -3769,4 +3776,117 @@ sbd_get_lbasize_shift(stmf_lu_t *lu)
 	sbd_lu_t *sl = (sbd_lu_t *)lu->lu_provider_private;
 
 	return (sl->sl_data_blocksize_shift);
+}
+
+void
+sbd_dump_state(scsi_task_t *task)
+{
+	sbd_cmd_t *scmd;
+
+	if (sbd_dump_state_log == 0)
+		return;
+
+	cmn_err(CE_NOTE, "Comstar State at last warning\n"
+		"task_stmf_private = %p\n"
+		"task_port_private = %p\n"
+		"task_lu_private = %p\n"
+		"task_session %p\n"
+		"task_lport %p\n"
+		"task_lu %p\n"
+		"task_lu_itl_handle %p\n"
+		"task_lun_no[8] %u %u %u %u %u %d %u %u\n"
+		"task_flags 0x%x\n"
+		"task_priority %u\n"
+		"task_mgmt_function %u\n"
+		"task_max_nbufs %u\n"
+		"task_cur_nbufs %u\n"
+		"task_csn_size 0x%x\n"
+		"task_additional_flags %u\n"
+		"task_cmd_seq_no 0x%x\n"
+		"task_expected_xfer_length %u\n"
+		"task_timeout %u\n"
+		"task_ext_id %u\n"
+		"task_cdb_length %u\n"
+		"*task_cdb %p\n"
+		"task_cmd_xfer_length %u\n"
+		"task_nbytes_transferred %u\n"
+		"task_max_xfer_len %u\n"
+		"task_1st_xfer_len %u\n"
+		"task_copy_threshold %u\n"
+		"task_completion_status %d\n"
+		"task_resid %u\n"
+		"task_status_ctrl %u\n"
+		"task_scsi_status %u\n"
+		"task_sense_length %u\n"
+		"*task_sense_data %p\n"
+		"*task_extended_cmd %p\n"
+		"\n",
+		(void *) task->task_stmf_private,
+		(void *) task->task_port_private,
+		(void *) task->task_lu_private,
+		(void *) task->task_session,
+		(void *) task->task_lport,
+		(void *) task->task_lu,
+		(void *) task->task_lu_itl_handle,
+		task->task_lun_no[0],
+		task->task_lun_no[1],
+		task->task_lun_no[2],
+		task->task_lun_no[3],
+		task->task_lun_no[4],
+		task->task_lun_no[5],
+		task->task_lun_no[6],
+		task->task_lun_no[7],
+		task->task_flags,
+		task->task_priority,
+		task->task_mgmt_function,
+		task->task_max_nbufs,
+		task->task_cur_nbufs,
+		task->task_csn_size,
+		task->task_additional_flags,
+		task->task_cmd_seq_no,
+		task->task_expected_xfer_length,
+		task->task_timeout,
+		task->task_ext_id,
+		task->task_cdb_length,
+		(void *) task->task_cdb,
+		task->task_cmd_xfer_length,
+		task->task_nbytes_transferred,
+		task->task_max_xfer_len,
+		task->task_1st_xfer_len,
+		task->task_copy_threshold,
+		(int)task->task_completion_status,
+		task->task_resid,
+		task->task_status_ctrl,
+		task->task_scsi_status,
+		task->task_sense_length,
+		(void *) task->task_sense_data,
+		task->task_extended_cmd);
+
+	scmd = (sbd_cmd_t *)task->task_lu_private;
+	if (scmd == NULL)
+		cmn_err(CE_NOTE,
+			"task->task_lu_private is null no sbd_cmd");
+	else
+		cmn_err(CE_NOTE,
+			"sbd_cmd [task->task_lu_private]\n"
+			"tflags = 0x%x\n"
+			"nbufs = %u\n"
+			"cmd_type = %d\n"
+			"trans_data_len = %u\n"
+			"addr = %llu\n"
+			"len = %u\n"
+			"current_ro = %u\n"
+			"trans_data = %p\n"
+			"ats_state = %p\n"
+			"rsvd = 0x%x\n",
+			scmd->flags,
+			scmd->nbufs,
+			scmd->cmd_type,
+			scmd->trans_data_len,
+			(long long unsigned int)scmd->addr,
+			scmd->len,
+			scmd->current_ro,
+			(void *)scmd->trans_data,
+			(void *)scmd->ats_state,
+			scmd->rsvd);
 }

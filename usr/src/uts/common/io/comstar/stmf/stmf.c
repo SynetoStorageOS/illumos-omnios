@@ -22,7 +22,7 @@
  * Copyright (c) 2008, 2010, Oracle and/or its affiliates. All rights reserved.
  */
 /*
- * Copyright 2014, Nexenta Systems, Inc. All rights reserved.
+ * Copyright 2015, Nexenta Systems, Inc. All rights reserved.
  * Copyright (c) 2013 by Delphix. All rights reserved.
  * Copyright (c) 2013 by Saso Kiselkov. All rights reserved.
  */
@@ -33,6 +33,7 @@
 #include <sys/sunddi.h>
 #include <sys/modctl.h>
 #include <sys/scsi/scsi.h>
+#include <sys/scsi/generic/commands.h>
 #include <sys/scsi/generic/persist.h>
 #include <sys/scsi/impl/scsi_reset_notify.h>
 #include <sys/disp.h>
@@ -4128,6 +4129,8 @@ stmf_task_alloc(struct stmf_local_port *lport, stmf_scsi_session_t *ss,
 	itask->itask_lport_read_time = itask->itask_lport_write_time = 0;
 	itask->itask_read_xfer = itask->itask_write_xfer = 0;
 	itask->itask_audit_index = 0;
+	bzero(&itask->itask_audit_records[0],
+		sizeof (stmf_task_audit_rec_t) * ITASK_TASK_AUDIT_DEPTH);
 
 	if (new_task) {
 		if (lu->lu_task_alloc(task) != STMF_SUCCESS) {
@@ -4168,6 +4171,7 @@ stmf_task_alloc(struct stmf_local_port *lport, stmf_scsi_session_t *ss,
 	return (task);
 }
 
+/* ARGSUSED */
 static void
 stmf_task_lu_free(scsi_task_t *task, stmf_i_scsi_session_t *iss)
 {
@@ -4473,6 +4477,16 @@ stmf_post_task(scsi_task_t *task, stmf_data_buf_t *dbuf)
 	}
 	if (w1->worker_queue_depth < w->worker_queue_depth)
 		w = w1;
+
+	/*
+	 * if this command is a write_same or unmap just use worker 0
+	 * to limit starvation.
+	 */
+	if (task->task_cdb[0] == SCMD_WRITE_SAME_G4 ||
+		task->task_cdb[0] == SCMD_WRITE_SAME_G1 ||
+		task->task_cdb[0] == SCMD_UNMAP) {
+		w = &stmf_workers[0];
+	}
 
 	mutex_enter(&w->worker_lock);
 	if (((w->worker_flags & STMF_WORKER_STARTED) == 0) ||
@@ -4910,6 +4924,7 @@ stmf_queue_task_for_abort(scsi_task_t *task, stmf_status_t s)
 	    (stmf_i_scsi_task_t *)task->task_stmf_private;
 	stmf_worker_t *w;
 	uint32_t old, new;
+	stmf_lu_t *lu = task->task_lu;
 
 	stmf_task_audit(itask, TE_TASK_ABORT, CMD_OR_IOF_NA, NULL);
 
@@ -4925,6 +4940,7 @@ stmf_queue_task_for_abort(scsi_task_t *task, stmf_status_t s)
 	task->task_completion_status = s;
 	itask->itask_start_time = ddi_get_lbolt();
 
+	lu->lu_abort(lu, STMF_LU_SET_ABORT, task, 0);
 	if (((w = itask->itask_worker) == NULL) ||
 	    (itask->itask_flags & ITASK_IN_TRANSITION)) {
 		return;
@@ -4947,6 +4963,7 @@ stmf_queue_task_for_abort(scsi_task_t *task, stmf_status_t s)
 	if (++(w->worker_queue_depth) > w->worker_max_qdepth_pu) {
 		w->worker_max_qdepth_pu = w->worker_queue_depth;
 	}
+
 	if ((w->worker_flags & STMF_WORKER_ACTIVE) == 0)
 		cv_signal(&w->worker_cv);
 	mutex_exit(&w->worker_lock);
@@ -5743,6 +5760,8 @@ void
 stmf_scsilib_send_status(scsi_task_t *task, uint8_t st, uint32_t saa)
 {
 	uint8_t sd[18];
+	stmf_lu_t *lu = task->task_lu;
+
 	task->task_scsi_status = st;
 	if (st == 2) {
 		bzero(sd, 18);
@@ -5758,6 +5777,7 @@ stmf_scsilib_send_status(scsi_task_t *task, uint8_t st, uint32_t saa)
 		task->task_sense_length = 0;
 	}
 	(void) stmf_send_scsi_status(task, STMF_IOF_LU_DONE);
+	lu->lu_task_done(task);
 }
 
 uint32_t
@@ -6215,6 +6235,8 @@ stmf_worker_loop:;
 	}
 	/* CONSTCOND */
 	while (1) {
+		itask = NULL;
+		curcmd = 0;
 		dec_qdepth = 0;
 		if (wait_timer && (ddi_get_lbolt() >= wait_timer)) {
 			wait_timer = 0;
@@ -6233,15 +6255,16 @@ stmf_worker_loop:;
 			}
 		}
 		if ((itask = w->worker_task_head) == NULL) {
+			w->worker_task_tail = NULL;
 			break;
 		}
+
 		task = itask->itask_task;
 		DTRACE_PROBE2(worker__active, stmf_worker_t, w,
 		    scsi_task_t *, task);
 		w->worker_task_head = itask->itask_worker_next;
 		if (w->worker_task_head == NULL)
 			w->worker_task_tail = NULL;
-
 		wait_queue = 0;
 		abort_free = 0;
 		if (itask->itask_ncmds > 0) {
@@ -6356,6 +6379,7 @@ out_itask_flag_loop:
 			lu->lu_send_status_done(task);
 			break;
 		case ITASK_CMD_ABORT:
+			lu->lu_task_done(task);
 			if (abort_free) {
 				stmf_task_free(task);
 			} else {
@@ -6654,7 +6678,6 @@ stmf_dlun0_new_task(scsi_task_t *task, stmf_data_buf_t *dbuf)
 		dbuf->db_relative_offset = 0;
 		dbuf->db_flags = DB_DIRECTION_TO_RPORT;
 		(void) stmf_xfer_data(task, dbuf, 0);
-
 		return;
 
 	case SCMD_REPORT_LUNS:
@@ -6712,7 +6735,6 @@ stmf_dlun0_new_task(scsi_task_t *task, stmf_data_buf_t *dbuf)
 		(void) stmf_xfer_data(task, dbuf, 0);
 		return;
 	}
-
 	stmf_scsilib_send_status(task, STATUS_CHECK, STMF_SAA_INVALID_OPCODE);
 }
 
