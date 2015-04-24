@@ -1,44 +1,7 @@
-cmake_minimum_required(VERSION 2.8.4)
+cmake_minimum_required(VERSION 3.1)
 project(illumos_omnios)
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
-
-include_directories(BEFORE
-    usr/src/head
-    usr/src/common
-
-    usr/src/uts/common
-    usr/src/uts/common/sys
-    usr/src/uts/common/fs/zfs
-
-    usr/src/common/zfs
-
-    usr/src/cmd/stat/common
-
-    usr/src/lib/libkstat
-    usr/src/lib/libdevinfo
-    usr/src/lib/libnvpair
-    usr/src/lib/libbsm
-
-    usr/src/lib/libdiskmgt/common
-    usr/src/lib/libsmbios/common
-    usr/src/lib/libuutil/common
-    usr/src/lib/libuuid/common
-    usr/src/lib/libzfs_core/common
-    usr/src/lib/libzfs/common
-    usr/src/lib/libdlpi/common
-    usr/src/lib/libdladm/common
-    usr/src/lib/libinetutil/common
-    usr/src/lib/libvrrpadm/common
-    usr/src/lib/librstp/common
-    usr/src/lib/libipadm/common
-    usr/src/lib/libdhcpagent/common
-    usr/src/lib/libsocket/common
-
-    usr/src/lib/fm/topo/libtopo
-    usr/src/lib/fm/topo/modules/common
-
-)
 
 set(SOURCE_FILES
     usr/src/cmd/abi/appcert/static_prof/static_prof.c
@@ -5985,6 +5948,7 @@ set(SOURCE_FILES
     usr/src/cmd/vi/port/ovprintf.c
     usr/src/cmd/vi/port/printf.c
     usr/src/cmd/virtinfo/virtinfo.c
+    usr/src/cmd/virtual_storage/virtual-storage.c
     usr/src/cmd/vntsd/auth.c
     usr/src/cmd/vntsd/chars.h
     usr/src/cmd/vntsd/cmd.c

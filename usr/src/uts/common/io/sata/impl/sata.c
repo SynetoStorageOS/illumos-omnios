@@ -101,7 +101,7 @@ static	int sata_current_max_qdepth;
  * Enabling (AP_CONNECT) device port with an attached device does not result
  * in device onlining regardless of the flag setting
  */
-int sata_auto_online = 0;
+int sata_auto_online = 1;
 
 #ifdef SATA_DEBUG
 

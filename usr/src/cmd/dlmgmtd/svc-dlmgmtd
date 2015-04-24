@@ -41,19 +41,27 @@ fi
 DLMGMTD_STATUS=$?
 
 # Wait for datalink management to properly start
-TIMEOUT=10
+TIMEOUT=20
 CONF=/etc/physical-mac-addresses.conf
 TMPCONF=/tmp/physical-mac-addresses.conf
 while true; do
 	# Read physical mac address information and ignore VirtualBox mac addresses (that use the unregistered MAC OUI 08:00:27)
 	ADDRESSES=$(/usr/sbin/dladm show-phys -p -m -o ADDRESS 2>/dev/null | grep -v '^8:0:27:' | /usr/gnu/bin/sort | tee $TMPCONF)
 	if [ ! -z "$ADDRESSES" ]; then
+		echo "Found addresses: $ADDRESSES"
 		# Do not use the file if aggregates are present (i.e. we have duplicates in the generated mac addresses file)
 		if /usr/gnu/bin/uniq $TMPCONF | /usr/gnu/bin/diff $TMPCONF - >/dev/null 2>&1; then
+			echo "Moving $TMPCONF to $CONF"
 			mv $TMPCONF $CONF
+		else
+			echo "Something went wrong when creating $TMPCONF"
 		fi
 		break
 	fi
+
+	echo "Can't get mac addresses right now. We found no mac addresses."
+	echo "Timeout in $TIMEOUT seconds"
+
 	if [ "$TIMEOUT" == "0" ]; then
 		break
 	else
