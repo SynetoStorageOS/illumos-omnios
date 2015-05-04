@@ -44,6 +44,10 @@
 #include <config_admin.h>
 #include <sys/param.h>
 
+#include<fcntl.h>
+#include<sys/ioctl.h>
+#include<sys/dkio.h>
+
 
 #include "diskname_converter.h"
 #include "kstats.h"
@@ -53,6 +57,7 @@ typedef struct di_opts {
 	boolean_t di_parseable;
 	boolean_t di_physical;
 	boolean_t di_condensed;
+	boolean_t di_json;
 } di_opts_t;
 
 typedef struct di_phys {
@@ -108,6 +113,7 @@ static char condensed_tristate(int val, char c) {
 
 	return ('?');
 }
+
 
 static void populate_serial_numbers(di_phys_t *phys) {
 	disk_list_t *dlist = lookup_dsk_name(phys->dp_dev);
@@ -252,6 +258,7 @@ static void enumerate_disks(di_opts_t *opts) {
 	char sizestr[32];
 	char slotname[32];
 	char statestr[8];
+	char sataname[8];
 
 	char *vid, *pid, *opath, *c, *ctype = NULL;
 	boolean_t removable;
@@ -278,6 +285,7 @@ static void enumerate_disks(di_opts_t *opts) {
 	}
 
 	p = config_list_ext(0, NULL, &lista, &nr, NULL, NULL, NULL, CFGA_FLAG_LIST_ALL);
+	printf("{\"disks\": [");
 
 	for (i = 0; media != NULL && media[i] != NULL; i++) {
 		if ((disk = dm_get_associated_descriptors(media[i], DM_DRIVE, &err)) == NULL) {
@@ -316,6 +324,10 @@ static void enumerate_disks(di_opts_t *opts) {
 
 		}
 
+		//fd = open(opath, O_RDONLY);
+		//printf("%s, %d", opath,fd);
+
+
 		/*
 		 * Parse full device path to only show the device name,
 		 * i.e. c0t1d0.  Many paths will reference a particular
@@ -341,18 +353,19 @@ static void enumerate_disks(di_opts_t *opts) {
 		 */
 		total = size * blocksize;
 
-		if (opts->di_parseable) {
+		if (opts->di_parseable || opts->di_json) {
 			(void) snprintf(sizestr, sizeof(sizestr), "%lu", total);
 		} else {
 			total_in_GiB = (double) total / 1024.0 / 1024.0 / 1024.0;
 			(void) snprintf(sizestr, sizeof(sizestr), "%7.2f GiB", total_in_GiB);
 		}
 
-		if (opts->di_parseable) {
+		if (opts->di_parseable || opts->di_json) {
 			for(j=0; j<nr; j++)
 							if(strstr(lista[j].ap_log_id, phys.dp_dev)!=NULL && strstr(lista[j].ap_class, "sata")!=NULL )
 							{
 								(void) snprintf(slotname, sizeof(slotname), "sata%c,%d", lista[j].ap_log_id[4], phys.dp_slot);
+								(void) snprintf(sataname, sizeof(sataname), "sata%c", lista[j].ap_log_id[4]);
 								break;
 							}
 			if(j>=nr)
@@ -373,7 +386,48 @@ static void enumerate_disks(di_opts_t *opts) {
 			    condensed_tristate(ssd, 'S'));
 		}
 
-		if (opts->di_parseable) {
+		if(opts->di_json)
+		{
+			(void) snprintf(statestr, sizeof(statestr), "%c%c%c%c", condensed_tristate(phys.dp_faulty, 'F'),
+						    condensed_tristate(phys.dp_locate, 'L'), condensed_tristate(removable, 'R'),
+						    condensed_tristate(ssd, 'S'));
+			if(i>0)
+				printf(",");
+
+			printf("{"
+					"\"type\":\"%s\","
+					"\"deviceName\":\"%s\","
+					"\"vendorID\":\"%s\","
+					"\"productID\":\"%s\","
+					"\"serial\":\"%s\","
+					"\"size\":%llu,"
+					"\"state\":["
+						"{\"isFaulty\":%s,"
+						 "\"isLocateLEDActive\":%s,"
+						 "\"isRemovable\": %s,"
+						 "\"isSSD\": %s,"
+						 "\"hardErrors\": %ld,"
+						 "\"softErrors\": %ld,"
+						 "\"transportErrors\": %ld}],"
+						 "\"slot\":["
+						 	 "{"
+						 	 	 "\"controller\": \"%s\","
+						 	 	 "\"slotName\":\"%s\","
+								 "\"slotNumber\":%d"
+						 	 "}"
+						 "]"
+					"}",
+					ctype, device, vid, pid,
+					display_string(phys.dp_serial), total, phys.dp_faulty ? "true" : "false", phys.dp_locate ? "true" : "false", removable ? "true" : "false", ssd ? "true" : "false",
+							get_error_counter_by_serial_number((phys.dp_serial == NULL) ? "" : phys.dp_serial, "Hard Errors"),
+							get_error_counter_by_serial_number((phys.dp_serial == NULL) ? "" : phys.dp_serial, "Soft Errors"),
+							get_error_counter_by_serial_number((phys.dp_serial == NULL) ? "" : phys.dp_serial, "Transport Errors"),
+							strlen(sataname)==0 ? phys.dp_chassis : sataname, phys.dp_slotname, phys.dp_slot);
+
+
+		}
+
+		else if (opts->di_parseable) {
 			(void) snprintf(statestr, sizeof(statestr), "%c%c%c%c", condensed_tristate(phys.dp_faulty, 'F'),
 			    condensed_tristate(phys.dp_locate, 'L'), condensed_tristate(removable, 'R'),
 			    condensed_tristate(ssd, 'S'));
@@ -423,6 +477,7 @@ static void enumerate_disks(di_opts_t *opts) {
 		dm_free_descriptors(controller);
 		dm_free_descriptors(disk);
 	}
+	printf("]}");
 	free(lista);
 	dm_free_descriptors(media);
 	topo_snap_release(hp);
@@ -432,9 +487,9 @@ static void enumerate_disks(di_opts_t *opts) {
 int main(int argc, char *argv[]) {
 	char c;
 
-	di_opts_t opts = {.di_condensed = B_FALSE, .di_scripted = B_TRUE, .di_physical = B_FALSE, .di_parseable = B_FALSE};
+	di_opts_t opts = {.di_condensed = B_FALSE, .di_scripted = B_TRUE, .di_physical = B_FALSE, .di_parseable = B_FALSE, .di_json = B_FALSE};
 
-	while ((c = (char) getopt(argc, argv, ":cHPp")) != EOF) {
+	while ((c = (char) getopt(argc, argv, ":cHPpJ")) != EOF) {
 		switch (c) {
 			case 'c':
 				if (opts.di_physical) {
@@ -456,6 +511,10 @@ int main(int argc, char *argv[]) {
 			case 'p':
 				opts.di_parseable = B_TRUE;
 				break;
+			case 'J':
+				opts.di_json = B_TRUE;
+				break;
+
 			case '?':
 				usage(argv[0]);
 				fatal(1, "unknown option -%c\n", optopt);
@@ -480,6 +539,6 @@ int main(int argc, char *argv[]) {
 	}
 
 	enumerate_disks(&opts);
-	//print_cfgadm();
+
 	return (0);
 }
