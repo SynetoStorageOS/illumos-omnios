@@ -285,7 +285,7 @@ static void enumerate_disks(di_opts_t *opts) {
 	}
 
 	p = config_list_ext(0, NULL, &lista, &nr, NULL, NULL, NULL, CFGA_FLAG_LIST_ALL);
-	printf("{\"disks\": [");
+	printf("{\"disks\": {");
 
 	for (i = 0; media != NULL && media[i] != NULL; i++) {
 		if ((disk = dm_get_associated_descriptors(media[i], DM_DRIVE, &err)) == NULL) {
@@ -394,29 +394,28 @@ static void enumerate_disks(di_opts_t *opts) {
 			if(i>0)
 				printf(",");
 
-			printf("{"
+			printf("\"%s\":{"
 					"\"type\":\"%s\","
 					"\"deviceName\":\"%s\","
 					"\"vendorID\":\"%s\","
 					"\"productID\":\"%s\","
 					"\"serial\":\"%s\","
 					"\"size\":%llu,"
-					"\"state\":["
+					"\"state\":"
 						"{\"isFaulty\":%s,"
 						 "\"isLocateLEDActive\":%s,"
 						 "\"isRemovable\": %s,"
 						 "\"isSSD\": %s,"
 						 "\"hardErrors\": %ld,"
 						 "\"softErrors\": %ld,"
-						 "\"transportErrors\": %ld}],"
-						 "\"slot\":["
+						 "\"transportErrors\": %ld},"
+						 "\"slot\":"
 						 	 "{"
 						 	 	 "\"controller\": \"%s\","
 						 	 	 "\"slotName\":\"%s\","
 								 "\"slotNumber\":%d"
 						 	 "}"
-						 "]"
-					"}",
+					"}", device,
 					ctype, device, vid, pid,
 					display_string(phys.dp_serial), total, phys.dp_faulty ? "true" : "false", phys.dp_locate ? "true" : "false", removable ? "true" : "false", ssd ? "true" : "false",
 							get_error_counter_by_serial_number((phys.dp_serial == NULL) ? "" : phys.dp_serial, "Hard Errors"),
@@ -477,7 +476,7 @@ static void enumerate_disks(di_opts_t *opts) {
 		dm_free_descriptors(controller);
 		dm_free_descriptors(disk);
 	}
-	printf("]}");
+	printf("}}");
 	free(lista);
 	dm_free_descriptors(media);
 	topo_snap_release(hp);
