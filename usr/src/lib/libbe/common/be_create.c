@@ -21,6 +21,7 @@
 
 /*
  * Copyright (c) 2008, 2010, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, Syneto S.R.L. All rights reserved.
  */
 
 /*
@@ -414,10 +415,8 @@ be_destroy(nvlist_t *be_attrs)
 		    bt.obe_name);
 		return (BE_ERR_INVAL);
 	} else if (bt.obe_name != NULL) {
-		if ((ret = be_find_current_be(&cur_bt)) != BE_SUCCESS) {
-			return (ret);
-		}
-		if (strcmp(cur_bt.obe_name, bt.obe_name) == 0) {
+		if ((be_find_current_be(&cur_bt)) == BE_SUCCESS &&
+		    (strcmp(cur_bt.obe_name, bt.obe_name) == 0)) {
 			return (BE_ERR_DESTROY_CURR_BE);
 		}
 	}
