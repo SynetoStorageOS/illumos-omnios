@@ -345,6 +345,23 @@ usr/share/man/man5/zpool-features.5
 	(cd $ROOT && tar cfj ../../zfs-${git_rev}.tar.bz2 $files)
 }
 
+do_onuzfs() {
+	if [ ! -e zfs-${git_rev}.tar.bz2 ]; then
+		do_tar
+	fi
+	beadm create zfs-${git_rev}
+	if [ $? != 0 ]; then
+		echo "Boot env already exists! You must first commit changes."
+		return
+	fi
+	beadm mount zfs-${git_rev} /tmp/zfs-${git_rev}
+	/usr/gnu/bin/tar -C /tmp/zfs-${git_rev} -jxf zfs-${git_rev}.tar.bz2
+	beadm umount zfs-${git_rev}
+	beadm activate zfs-${git_rev}
+	beadm list
+}
+
+
 ################################################################
 
 if [ "$1" = "" ]; then
@@ -396,6 +413,9 @@ do
     ;;
   tar)
     do_tar
+    ;;
+  onuzfs)
+    do_onuzfs
     ;;
   *)
     echo "Usage: $0 {install|lint|clean|clobber|deplibs|tags|tar}";
