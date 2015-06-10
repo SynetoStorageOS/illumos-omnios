@@ -432,7 +432,7 @@ static void enumerate_disks(di_opts_t *opts) {
 			    condensed_tristate(ssd, 'S'));
 
 			printf("%s;%s;%s;%s;%s;%s;%s;%s;%s;%s;%s;%s;%ld;%ld;%ld\n", ctype, device, vid, pid,
-			    display_string(phys.dp_serial), sizestr, statestr, slotname,
+			    display_string(phys.dp_serial), total, statestr, slotname,
 			    display_tristate(removable), display_tristate(ssd),
 			    display_tristate(phys.dp_faulty), display_tristate(phys.dp_locate),
 			    get_error_counter_by_serial_number((phys.dp_serial == NULL) ? "" : phys.dp_serial, "Soft Errors"),
