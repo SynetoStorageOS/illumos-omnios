@@ -285,7 +285,9 @@ static void enumerate_disks(di_opts_t *opts) {
 	}
 
 	p = config_list_ext(0, NULL, &lista, &nr, NULL, NULL, NULL, CFGA_FLAG_LIST_ALL);
-	printf("{\"disks\": {");
+	if(opts->di_json) {
+		printf("{\"disks\": {");
+	}
 
 	for (i = 0; media != NULL && media[i] != NULL; i++) {
 		if ((disk = dm_get_associated_descriptors(media[i], DM_DRIVE, &err)) == NULL) {
@@ -476,7 +478,10 @@ static void enumerate_disks(di_opts_t *opts) {
 		dm_free_descriptors(controller);
 		dm_free_descriptors(disk);
 	}
-	printf("}}");
+	if(opts->di_json) {
+		printf("}}");
+	}
+	printf("/n");
 	free(lista);
 	dm_free_descriptors(media);
 	topo_snap_release(hp);
