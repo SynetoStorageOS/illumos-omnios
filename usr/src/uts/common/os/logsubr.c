@@ -249,7 +249,7 @@ log_init(void)
 	 */
 	printf("\rSunOS Release %s Version %s %u-bit\n",
 	    utsname.release, utsname.version, NBBY * (uint_t)sizeof (void *));
-	printf("Copyright (c) 2010-2015, Syneto LTD. "
+	printf("Copyright (c) 2010-2015, Syneto S.R.L. "
 	    "All rights reserved.\n");
 #ifdef DEBUG
 	printf("DEBUG enabled\n");
