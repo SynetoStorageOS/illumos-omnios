@@ -433,7 +433,7 @@ static void enumerate_disks(di_opts_t *opts) {
 			    condensed_tristate(phys.dp_locate, 'L'), condensed_tristate(removable, 'R'),
 			    condensed_tristate(ssd, 'S'));
 
-			printf("%s;%s;%s;%s;%s;%s;%s;%s;%s;%s;%s;%s;%ld;%ld;%ld\n", ctype, device, vid, pid,
+			printf("%s;%s;%s;%s;%s;%llu;%s;%s;%s;%s;%s;%s;%ld;%ld;%ld\n", ctype, device, vid, pid,
 			    display_string(phys.dp_serial), total, statestr, slotname,
 			    display_tristate(removable), display_tristate(ssd),
 			    display_tristate(phys.dp_faulty), display_tristate(phys.dp_locate),
@@ -481,7 +481,7 @@ static void enumerate_disks(di_opts_t *opts) {
 	if(opts->di_json) {
 		printf("}}");
 	}
-	printf("/n");
+	printf("\n");
 	free(lista);
 	dm_free_descriptors(media);
 	topo_snap_release(hp);
