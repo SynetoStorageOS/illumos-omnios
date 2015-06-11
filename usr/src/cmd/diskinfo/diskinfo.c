@@ -480,8 +480,8 @@ static void enumerate_disks(di_opts_t *opts) {
 	}
 	if(opts->di_json) {
 		printf("}}");
+		printf("\n");
 	}
-	printf("\n");
 	free(lista);
 	dm_free_descriptors(media);
 	topo_snap_release(hp);
