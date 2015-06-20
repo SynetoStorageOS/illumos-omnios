@@ -753,6 +753,9 @@ $(i386_ONLY)file \
     path=usr/platform/i86pc/lib/fm/topo/maps/Syneto-ARK-110-disk-hc-topology.xml \
     mode=0444
 $(i386_ONLY)file \
+    path=usr/platform/i86pc/lib/fm/topo/maps/Syneto-Extreme-220-disk-hc-topology.xml \
+    mode=0444
+$(i386_ONLY)file \
     path=usr/platform/i86pc/lib/fm/topo/maps/chassis-hc-topology.xml \
     mode=0444
 $(i386_ONLY)file path=usr/platform/i86pc/lib/fm/topo/maps/chip-hc-topology.xml \
