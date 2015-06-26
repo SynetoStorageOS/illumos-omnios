@@ -20,7 +20,8 @@
  */
 /*
  * Copyright (c) 2008, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright 2015 Nexenta Systems, Inc.  All rights reserved.
+ *
+ * Copyright 2011, 2014 Nexenta Systems, Inc.  All rights reserved.
  */
 
 #ifndef	_SBD_IMPL_H
@@ -216,25 +217,6 @@ typedef struct sbd_cmd {
 
 /*
  * flags for sbd_cmd
- *
- * SBD_SCSI_CMD_ACTIVE means that a command is running.  This is the time
- *	between the function sbd_new_task is called and either the command
- *	completion is sent (stmf_scsilib_send_status) or an abort is
- *	issued
- *
- * SBD_SCSI_CMD_ABORT_REQUESTED is when a command is being aborted.  It may
- *	be set prior to the task being dispatched or anywhere in the processing
- *	of the command.
- *
- * SBD_SCSI_CMD_XFER_FAIL is set when a command data buffer transfer was
- *	errored.  Usually it leads to an abort.
- *
- * SBD_SCSI_CMD_SYNC_WRITE synchronous write being done.
- *
- * SBD_SCSI_CMD_TRANS_DATA means that a buffer has been allocated to
- *	be used for the transfer of data.
- *
- * SBD_SCSI_CMD_DONE is set when sbd_task_done is called.
  */
 #define	SBD_SCSI_CMD_ACTIVE		0x01
 #define	SBD_SCSI_CMD_ABORT_REQUESTED	0x02
@@ -242,7 +224,7 @@ typedef struct sbd_cmd {
 #define	SBD_SCSI_CMD_SYNC_WRITE		0x08
 #define	SBD_SCSI_CMD_TRANS_DATA		0x10
 #define	SBD_SCSI_CMD_ATS_RELATED	0x20
-#define	SBD_SCSI_CMD_DONE		0x80
+#define	SBD_SCSI_CMD_RUNNING		0x40
 
 /*
  * cmd types
@@ -327,8 +309,6 @@ void sbd_send_status_done(struct scsi_task *task);
 void sbd_task_free(struct scsi_task *task);
 stmf_status_t sbd_abort(struct stmf_lu *lu, int abort_cmd, void *arg,
 							uint32_t flags);
-void sbd_task_start(struct scsi_task *task);
-void sbd_task_done(struct scsi_task *task);
 void sbd_task_poll(struct scsi_task *task);
 void sbd_dbuf_free(struct scsi_task *task, struct stmf_data_buf *dbuf);
 void sbd_ctl(struct stmf_lu *lu, int cmd, void *arg);

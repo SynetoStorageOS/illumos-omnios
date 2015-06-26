@@ -21,7 +21,7 @@
 /*
  * Copyright (c) 2008, 2010, Oracle and/or its affiliates. All rights reserved.
  *
- * Copyright 2015 Nexenta Systems, Inc.  All rights reserved.
+ * Copyright 2011 Nexenta Systems, Inc.  All rights reserved.
  */
 
 #ifndef	_STMF_SBD_H
@@ -247,6 +247,8 @@ typedef struct sbd_lu {
 	struct sbd_it_data	*sl_it_list;
 	struct sbd_pgr		*sl_pgr;
 	uint64_t	sl_rs_owner_session_id;
+
+	ats_state_t	sl_ats_state;		/* ats handling */
 	list_t		sl_ats_io_list;
 } sbd_lu_t;
 
