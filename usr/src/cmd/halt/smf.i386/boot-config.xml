@@ -92,7 +92,7 @@
 		<propval name='auto-reboot-safe' type='boolean'
 		    value='false' />	
 		<propval name='fastreboot_default' type='boolean'
-		    value='true' />
+		    value='false' />
 		<propval name='fastreboot_onpanic' type='boolean'
 		    value='true' />
 		<propval name='value_authorization' type='astring'
