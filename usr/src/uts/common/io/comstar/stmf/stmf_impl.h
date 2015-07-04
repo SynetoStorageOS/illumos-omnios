@@ -276,6 +276,34 @@ typedef struct stmf_i_scsi_task {
 #define	ITASK_DEFAULT_ABORT_TIMEOUT	5
 
 /*
+ * Common code to encode an itask onto the worker_task queue is placed
+ * in this macro to simplify future maintenace activity.
+ */
+#define	STMF_ENQUEUE_ITASK(w, i) \
+	i->itask_worker_next = NULL; \
+	if (w->worker_task_tail) { \
+		w->worker_task_tail->itask_worker_next = i; \
+	} else { \
+		w->worker_task_head = i; \
+	} \
+	w->worker_task_tail = i; \
+	if (++(w->worker_queue_depth) > w->worker_max_qdepth_pu) { \
+		w->worker_max_qdepth_pu = w->worker_queue_depth; \
+	} \
+	/* Measure task waitq time */ \
+	i->itask_waitq_enter_timestamp = gethrtime();
+
+#define	STMF_DEQUEUE_ITASK(w, itask) \
+	if ((itask = w->worker_task_head) != NULL) { \
+		w->worker_task_head = itask->itask_worker_next; \
+		if (w->worker_task_head == NULL) { \
+			w->worker_task_tail = NULL; \
+		} \
+	} else { \
+		w->worker_task_tail = NULL; \
+	}
+	
+/*
  * itask_flags
  */
 #define	ITASK_IN_FREE_LIST		0x0001

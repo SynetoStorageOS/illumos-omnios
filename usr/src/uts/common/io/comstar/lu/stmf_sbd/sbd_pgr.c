@@ -21,7 +21,7 @@
 /*
  * Copyright (c) 2009, 2010, Oracle and/or its affiliates. All rights reserved.
  *
- * Copyright 2014 Nexenta Systems, Inc.  All rights reserved.
+ * Copyright 2015 Nexenta Systems, Inc.  All rights reserved.
  */
 
 #include <sys/atomic.h>
@@ -437,6 +437,7 @@ sbd_pgr_meta_load(sbd_lu_t *slu)
 	return (ret);
 
 sbd_pgr_meta_load_failed:
+	/* CSTYLED */
 	{
 	char *lun_name = sbd_get_devid_string(slu);
 	sbd_pgr_keylist_dealloc(slu);
@@ -1604,7 +1605,7 @@ sbd_pgr_out_release(scsi_task_t *task)
 			if (sbd_pgr_should_save(slu) == B_TRUE) {
 				if (sbd_pgr_meta_write(slu) != SBD_SUCCESS) {
 					stmf_scsilib_send_status(task,
-					    STATUS_CHECK,
+					    STATUS_CHECK, /* CSTYLED */
 					    STMF_SAA_INSUFFICIENT_REG_RESOURCES);
 					return;
 				}

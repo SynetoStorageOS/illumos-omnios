@@ -21,7 +21,7 @@
 /*
  * Copyright (c) 2008, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2013 by Delphix. All rights reserved.
- * Copyright 2014 Nexenta Systems, Inc.  All rights reserved.
+ * Copyright 2015 Nexenta Systems, Inc.  All rights reserved.
  */
 #ifndef	_LPIF_H
 #define	_LPIF_H
@@ -77,6 +77,8 @@ typedef struct stmf_lu {
 	uint32_t		lu_proxy_reg_arg_len;
 	void			(*lu_dbuf_free)(struct scsi_task *task,
 		struct stmf_data_buf *dbuf);
+	void			(*lu_task_done)(struct scsi_task *task,
+				    uint8_t id);
 } stmf_lu_t;
 
 /*
@@ -85,6 +87,7 @@ typedef struct stmf_lu {
 #define	STMF_LU_ABORT_TASK		1
 #define	STMF_LU_RESET_STATE		2
 #define	STMF_LU_ITL_HANDLE_REMOVED	3
+#define	STMF_LU_SET_ABORT		4
 
 /*
  * Asymmetric access state
