@@ -61,6 +61,8 @@ function find_runfile
 		distro=openindiana
 	elif [[ 0 -ne $(grep -c OmniOS /etc/release 2>/dev/null) ]]; then
 		distro=omnios
+	elif [[ 0 -ne $(grep -c Syneto /etc/release 2>/dev/null) ]]; then
+		distro=syneto
 	fi
 
 	[[ -n $distro ]] && echo $STF_SUITE/runfiles/$distro.run
