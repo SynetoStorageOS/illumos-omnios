@@ -394,14 +394,14 @@ static void enumerate_disks(di_opts_t *opts) {
 				printf(",");
 
 			printf("\"%s\":{"
-						   "\"type\":\"%s\","
-						   "\"devicename\":\"%s\","
+						   "\"connectionType\":\"%s\","
+						   "\"deviceName\":\"%s\","
 						   "\"vendorId\":\"%s\","
 						   "\"productId\":\"%s\","
 						   "\"serialNumber\":\"%s\","
 						   "\"size\":%llu,"
 						   "\"state\":"
-							   "{\"faulty\":%s,"
+							   "{\"isFaulty\":%s,"
 							   "\"isIdentifying\":%s,"
 							   "\"isRemovable\": %s,"
 							   "\"isSsd\": %s,"
