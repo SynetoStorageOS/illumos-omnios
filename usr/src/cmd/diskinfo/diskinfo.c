@@ -61,17 +61,17 @@ typedef struct di_opts {
 } di_opts_t;
 
 typedef struct di_phys {
-	char *dp_dev;
-	char *dp_serial;
+	char *dp_device;
+	char *dp_serialnumber;
 	char *dp_slotname;
 	char *dp_chassis;
-	int dp_slot;
+	int dp_slotnumber;
 	int dp_faulty;
-	int dp_locate;
+	int dp_identifying;
 } di_phys_t;
 
 static void __NORETURN
-fatal(int rv, const char *fmt, ...) {
+		fatal(int rv, const char *fmt, ...) {
 	va_list ap;
 
 	va_start(ap, fmt);
@@ -116,11 +116,11 @@ static char condensed_tristate(int val, char c) {
 
 
 static void populate_serial_numbers(di_phys_t *phys) {
-	disk_list_t *dlist = lookup_dsk_name(phys->dp_dev);
+	disk_list_t *dlist = lookup_dsk_name(phys->dp_device);
 
 	if (dlist) {
-		if (phys->dp_serial == NULL) {
-			phys->dp_serial = strdup(getSerialNumber(dlist->ks_name));
+		if (phys->dp_serialnumber == NULL) {
+			phys->dp_serialnumber = strdup(getSerialNumber(dlist->ks_name));
 		}
 	}
 }
@@ -133,11 +133,11 @@ static void populate_internal_disk_topology(di_phys_t *phys) {
 		return;
 
 	asprintf(&phys->dp_chassis, "-");
-	if (sscanf(phys->dp_dev, "c%dt%dd0", &chassis, &slot) > 0) {
-		phys->dp_slot = slot;
+	if (sscanf(phys->dp_device, "c%dt%dd0", &chassis, &slot) > 0) {
+		phys->dp_slotnumber = slot;
 		asprintf(&phys->dp_slotname, "Internal Disk %d", slot);
 	} else {
-		phys->dp_slot = -1;
+		phys->dp_slotnumber = -1;
 		asprintf(&phys->dp_slotname, "-");
 	}
 }
@@ -157,16 +157,16 @@ static int disk_walker(topo_hdl_t *hp, tnode_t *np, void *arg) {
 		return (TOPO_WALK_NEXT);
 
 	if (topo_prop_get_string(np, TOPO_PGROUP_STORAGE,
-	    TOPO_STORAGE_LOGICAL_DISK_NAME, &name, &err) != 0) {
+							 TOPO_STORAGE_LOGICAL_DISK_NAME, &name, &err) != 0) {
 		return (TOPO_WALK_NEXT);
 	}
 
-	if (strcmp(name, pp->dp_dev) != 0)
+	if (strcmp(name, pp->dp_device) != 0)
 		return (TOPO_WALK_NEXT);
 
 	if (topo_prop_get_string(np, TOPO_PGROUP_STORAGE,
-	    TOPO_STORAGE_SERIAL_NUM, &serial, &err) == 0) {
-		pp->dp_serial = serial;
+							 TOPO_STORAGE_SERIAL_NUM, &serial, &err) == 0) {
+		pp->dp_serialnumber = serial;
 	}
 
 	pnp = topo_node_parent(np);
@@ -175,11 +175,11 @@ static int disk_walker(topo_hdl_t *hp, tnode_t *np, void *arg) {
 		if (topo_node_facility(hp, pnp, TOPO_FAC_TYPE_INDICATOR, TOPO_FAC_TYPE_ANY, &fl, &err) == 0) {
 			for (lp = topo_list_next(&fl.tf_list); lp != NULL; lp = topo_list_next(lp)) {
 				if (topo_prop_get_uint32(lp->tf_node, TOPO_PGROUP_FACILITY, TOPO_FACILITY_TYPE, (uint32_t *) &type,
-				    &err) != 0) {
+										 &err) != 0) {
 					continue;
 				}
 				if (topo_prop_get_uint32(lp->tf_node, TOPO_PGROUP_FACILITY, TOPO_LED_MODE, (uint32_t *) &mode, &err)
-				    != 0) {
+					!= 0) {
 					continue;
 				}
 
@@ -188,7 +188,7 @@ static int disk_walker(topo_hdl_t *hp, tnode_t *np, void *arg) {
 						pp->dp_faulty |= mode;
 						break;
 					case TOPO_LED_TYPE_LOCATE:
-						pp->dp_locate |= mode;
+						pp->dp_identifying |= mode;
 						break;
 					default:
 						break;
@@ -200,7 +200,7 @@ static int disk_walker(topo_hdl_t *hp, tnode_t *np, void *arg) {
 			pp->dp_slotname = slotname;
 		}
 
-		pp->dp_slot = topo_node_instance(pnp);
+		pp->dp_slotnumber = topo_node_instance(pnp);
 	}
 
 	char *new_dp_chassis;
@@ -221,8 +221,8 @@ static void populate_physical(topo_hdl_t *hp, di_phys_t *pp) {
 	int err;
 	topo_walk_t *wp;
 
-	pp->dp_faulty = pp->dp_locate = 0;
-	pp->dp_slot = -1;
+	pp->dp_faulty = pp->dp_identifying = 0;
+	pp->dp_slotnumber = -1;
 
 	err = 0;
 	wp = topo_walk_init(hp, FM_FMRI_SCHEME_HC, disk_walker, pp, &err);
@@ -249,7 +249,7 @@ static void enumerate_disks(di_opts_t *opts) {
 	dm_descriptor_t *disk, *controller;
 	nvlist_t *mattrs, *dattrs, *cattrs = NULL;
 	cfga_err_t p;
-	cfga_list_data_t	*lista;
+	cfga_list_data_t *lista;
 	int nr;
 
 	uint64_t size, total;
@@ -260,10 +260,10 @@ static void enumerate_disks(di_opts_t *opts) {
 	char statestr[8];
 	char sataname[8];
 
-	char *vid, *pid, *opath, *c, *ctype = NULL;
-	boolean_t removable;
-	boolean_t ssd;
-	char device[MAXPATHLEN];
+	char *vendor_id, *product_id, *full_device_path, *c, *connection_type = NULL;
+	boolean_t is_removable;
+	boolean_t is_ssd;
+	char devicename[MAXPATHLEN];
 	di_phys_t phys;
 	size_t len;
 
@@ -285,7 +285,7 @@ static void enumerate_disks(di_opts_t *opts) {
 	}
 
 	p = config_list_ext(0, NULL, &lista, &nr, NULL, NULL, NULL, CFGA_FLAG_LIST_ALL);
-	if(opts->di_json) {
+	if (opts->di_json) {
 		printf("{\"disks\": {");
 	}
 
@@ -303,49 +303,49 @@ static void enumerate_disks(di_opts_t *opts) {
 
 		dattrs = dm_get_attributes(disk[0], &err);
 
-		nvlist_query_string(dattrs, DM_VENDOR_ID, &vid);
-		nvlist_query_string(dattrs, DM_PRODUCT_ID, &pid);
-		nvlist_query_string(dattrs, DM_OPATH, &opath);
+		nvlist_query_string(dattrs, DM_VENDOR_ID, &vendor_id);
+		nvlist_query_string(dattrs, DM_PRODUCT_ID, &product_id);
+		nvlist_query_string(dattrs, DM_OPATH, &full_device_path);
 
-		removable = B_FALSE;
+		is_removable = B_FALSE;
 		if (nvlist_lookup_boolean(dattrs, DM_REMOVABLE) == 0)
-			removable = B_TRUE;
+			is_removable = B_TRUE;
 
-		ssd = B_FALSE;
+		is_ssd = B_FALSE;
 
 		if (nvlist_lookup_boolean(dattrs, DM_SOLIDSTATE) == 0)
-			ssd = B_TRUE;
+			is_ssd = B_TRUE;
 
 		if ((controller = dm_get_associated_descriptors(disk[0], DM_CONTROLLER, &err)) != NULL) {
 			cattrs = dm_get_attributes(controller[0], &err);
-			nvlist_query_string(cattrs, DM_CTYPE, &ctype);
-			ctype = strdup(ctype);
-			for (c = ctype; *c != '\0'; c++)
+			nvlist_query_string(cattrs, DM_CTYPE, &connection_type);
+			connection_type = strdup(connection_type);
+			for (c = connection_type; *c != '\0'; c++)
 				*c = (char) toupper(*c);
 
 
 		}
 
-		//fd = open(opath, O_RDONLY);
-		//printf("%s, %d", opath,fd);
+		//fd = open(full_device_path, O_RDONLY);
+		//printf("%s, %d", full_device_path,fd);
 
 
 		/*
-		 * Parse full device path to only show the device name,
+		 * Parse full devicename path to only show the devicename name,
 		 * i.e. c0t1d0.  Many paths will reference a particular
 		 * slice (c0t1d0s0), so remove the slice if present.
 		 */
-		if ((c = strrchr(opath, '/')) != NULL)
-			(void) strlcpy(device, c + 1, sizeof(device));
+		if ((c = strrchr(full_device_path, '/')) != NULL)
+			(void) strlcpy(devicename, c + 1, sizeof(devicename));
 		else
-			(void) strlcpy(device, opath, sizeof(device));
-		len = strlen(device);
+			(void) strlcpy(devicename, full_device_path, sizeof(devicename));
+		len = strlen(devicename);
 
-		if (device[len - 2] == 's' && (device[len - 1] >= '0' && device[len - 1] <= '9'))
-			device[len - 2] = '\0';
+		if (devicename[len - 2] == 's' && (devicename[len - 1] >= '0' && devicename[len - 1] <= '9'))
+			devicename[len - 2] = '\0';
 
 		bzero(&phys, sizeof(phys));
-		phys.dp_dev = device;
+		phys.dp_device = devicename;
 		populate_physical(hp, &phys);
 
 		/*
@@ -363,16 +363,14 @@ static void enumerate_disks(di_opts_t *opts) {
 		}
 
 		if (opts->di_parseable || opts->di_json) {
-			for(j=0; j<nr; j++)
-							if(strstr(lista[j].ap_log_id, phys.dp_dev)!=NULL && strstr(lista[j].ap_class, "sata")!=NULL )
-							{
-								(void) snprintf(slotname, sizeof(slotname), "sata%c,%d", lista[j].ap_log_id[4], phys.dp_slot);
-								(void) snprintf(sataname, sizeof(sataname), "sata%c", lista[j].ap_log_id[4]);
-								break;
-							}
-			if(j>=nr)
-			{
-				(void) snprintf(slotname, sizeof(slotname), "%s,%d", phys.dp_chassis, phys.dp_slot);
+			for (j = 0; j < nr; j++)
+				if (strstr(lista[j].ap_log_id, phys.dp_device) != NULL && strstr(lista[j].ap_class, "sata") != NULL) {
+					(void) snprintf(slotname, sizeof(slotname), "sata%c,%d", lista[j].ap_log_id[4], phys.dp_slotnumber);
+					(void) snprintf(sataname, sizeof(sataname), "sata%c", lista[j].ap_log_id[4]);
+					break;
+				}
+			if (j >= nr) {
+				(void) snprintf(slotname, sizeof(slotname), "%s,%d", phys.dp_chassis, phys.dp_slotnumber);
 			}
 
 		} else if (phys.dp_slotname != NULL) {
@@ -384,101 +382,113 @@ static void enumerate_disks(di_opts_t *opts) {
 
 		if (opts->di_condensed) {
 			(void) snprintf(statestr, sizeof(statestr), "%c%c%c%c", condensed_tristate(phys.dp_faulty, 'F'),
-			    condensed_tristate(phys.dp_locate, 'L'), condensed_tristate(removable, 'R'),
-			    condensed_tristate(ssd, 'S'));
+							condensed_tristate(phys.dp_identifying, 'L'), condensed_tristate(is_removable, 'R'),
+							condensed_tristate(is_ssd, 'S'));
 		}
 
-		if(opts->di_json)
-		{
+		if (opts->di_json) {
 			(void) snprintf(statestr, sizeof(statestr), "%c%c%c%c", condensed_tristate(phys.dp_faulty, 'F'),
-						    condensed_tristate(phys.dp_locate, 'L'), condensed_tristate(removable, 'R'),
-						    condensed_tristate(ssd, 'S'));
-			if(i>0)
+							condensed_tristate(phys.dp_identifying, 'L'), condensed_tristate(is_removable, 'R'),
+							condensed_tristate(is_ssd, 'S'));
+			if (i > 0)
 				printf(",");
 
 			printf("\"%s\":{"
-					"\"type\":\"%s\","
-					"\"deviceName\":\"%s\","
-					"\"vendorID\":\"%s\","
-					"\"productID\":\"%s\","
-					"\"serial\":\"%s\","
-					"\"size\":%llu,"
-					"\"state\":"
-						"{\"isFaulty\":%s,"
-						 "\"isLocateLEDActive\":%s,"
-						 "\"isRemovable\": %s,"
-						 "\"isSSD\": %s,"
-						 "\"hardErrors\": %ld,"
-						 "\"softErrors\": %ld,"
-						 "\"transportErrors\": %ld},"
-						 "\"slot\":"
-						 	 "{"
-						 	 	 "\"controller\": \"%s\","
-						 	 	 "\"slotName\":\"%s\","
-								 "\"slotNumber\":%d"
-						 	 "}"
-					"}", device,
-					ctype, device, vid, pid,
-					display_string(phys.dp_serial), total, phys.dp_faulty ? "true" : "false", phys.dp_locate ? "true" : "false", removable ? "true" : "false", ssd ? "true" : "false",
-							get_error_counter_by_serial_number((phys.dp_serial == NULL) ? "" : phys.dp_serial, "Hard Errors"),
-							get_error_counter_by_serial_number((phys.dp_serial == NULL) ? "" : phys.dp_serial, "Soft Errors"),
-							get_error_counter_by_serial_number((phys.dp_serial == NULL) ? "" : phys.dp_serial, "Transport Errors"),
-							strlen(sataname)==0 ? phys.dp_chassis : sataname, phys.dp_slotname, phys.dp_slot);
+						   "\"type\":\"%s\","
+						   "\"devicename\":\"%s\","
+						   "\"vendorId\":\"%s\","
+						   "\"productId\":\"%s\","
+						   "\"serialNumber\":\"%s\","
+						   "\"size\":%llu,"
+						   "\"state\":"
+							   "{\"faulty\":%s,"
+							   "\"isIdentifying\":%s,"
+							   "\"isRemovable\": %s,"
+							   "\"isSsd\": %s,"
+							   "\"hardErrors\": %ld,"
+							   "\"softErrors\": %ld,"
+							   "\"transportErrors\": %ld"
+							   "},"
+						   "\"slot\":"
+							   "{"
+							   "\"chassis\": \"%s\","
+							   "\"name\":\"%s\","
+							   "\"number\":%d"
+							   "}"
+						   "}", devicename,
+				   connection_type, devicename, vendor_id, product_id,
+				   display_string(phys.dp_serialnumber), total, phys.dp_faulty ? "true" : "false", phys.dp_identifying
+																								   ? "true" : "false",
+				   is_removable
+				   ? "true" : "false", is_ssd
+									   ? "true" : "false",
+				   get_error_counter_by_serial_number((phys.dp_serialnumber == NULL) ? "" : phys.dp_serialnumber,
+													  "Hard Errors"),
+				   get_error_counter_by_serial_number((phys.dp_serialnumber == NULL) ? "" : phys.dp_serialnumber,
+													  "Soft Errors"),
+				   get_error_counter_by_serial_number((phys.dp_serialnumber == NULL) ? "" : phys.dp_serialnumber,
+													  "Transport Errors"),
+				   strlen(sataname) == 0 ? phys.dp_chassis : sataname, phys.dp_slotname, phys.dp_slotnumber);
 
 
 		}
 
 		else if (opts->di_parseable) {
 			(void) snprintf(statestr, sizeof(statestr), "%c%c%c%c", condensed_tristate(phys.dp_faulty, 'F'),
-			    condensed_tristate(phys.dp_locate, 'L'), condensed_tristate(removable, 'R'),
-			    condensed_tristate(ssd, 'S'));
+							condensed_tristate(phys.dp_identifying, 'L'), condensed_tristate(is_removable, 'R'),
+							condensed_tristate(is_ssd, 'S'));
 
-			printf("%s;%s;%s;%s;%s;%llu;%s;%s;%s;%s;%s;%s;%ld;%ld;%ld\n", ctype, device, vid, pid,
-			    display_string(phys.dp_serial), total, statestr, slotname,
-			    display_tristate(removable), display_tristate(ssd),
-			    display_tristate(phys.dp_faulty), display_tristate(phys.dp_locate),
-			    get_error_counter_by_serial_number((phys.dp_serial == NULL) ? "" : phys.dp_serial, "Soft Errors"),
-			    get_error_counter_by_serial_number((phys.dp_serial == NULL) ? "" : phys.dp_serial, "Hard Errors"),
-			    get_error_counter_by_serial_number((phys.dp_serial == NULL) ? "" : phys.dp_serial, "Transport Errors")
+			printf("%s;%s;%s;%s;%s;%llu;%s;%s;%s;%s;%s;%s;%ld;%ld;%ld\n", connection_type, devicename, vendor_id,
+				   product_id,
+				   display_string(phys.dp_serialnumber), total, statestr, slotname,
+				   display_tristate(is_removable), display_tristate(is_ssd),
+				   display_tristate(phys.dp_faulty), display_tristate(phys.dp_identifying),
+				   get_error_counter_by_serial_number((phys.dp_serialnumber == NULL) ? "" : phys.dp_serialnumber,
+													  "Soft Errors"),
+				   get_error_counter_by_serial_number((phys.dp_serialnumber == NULL) ? "" : phys.dp_serialnumber,
+													  "Hard Errors"),
+				   get_error_counter_by_serial_number((phys.dp_serialnumber == NULL) ? "" : phys.dp_serialnumber,
+													  "Transport Errors")
 			);
 		} else if (opts->di_physical) {
 			if (!opts->di_scripted) {
-				printf("%s\t%s\t%s\t%s\t%s\t%s\t%s\n", device, vid, pid, display_string(phys.dp_serial),
-				    display_tristate(phys.dp_faulty), display_tristate(phys.dp_locate),
-				    slotname);
+				printf("%s\t%s\t%s\t%s\t%s\t%s\t%s\n", devicename, vendor_id, product_id,
+					   display_string(phys.dp_serialnumber),
+					   display_tristate(phys.dp_faulty), display_tristate(phys.dp_identifying),
+					   slotname);
 			} else {
 				printf("%-22s  %-8s %-16s "
-					"%-20s %-3s %-3s %s\n", device, vid, pid,
-				    display_string(phys.dp_serial), display_tristate(phys.dp_faulty),
-				    display_tristate(phys.dp_locate), slotname);
+							   "%-20s %-3s %-3s %s\n", devicename, vendor_id, product_id,
+					   display_string(phys.dp_serialnumber), display_tristate(phys.dp_faulty),
+					   display_tristate(phys.dp_identifying), slotname);
 			}
 		} else if (opts->di_condensed) {
 			if (!opts->di_scripted) {
-				printf("%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", ctype, device, vid, pid,
-				    display_string(phys.dp_serial), sizestr, statestr, slotname);
+				printf("%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", connection_type, devicename, vendor_id, product_id,
+					   display_string(phys.dp_serialnumber), sizestr, statestr, slotname);
 			} else {
 				printf("%-7s %-22s  %-8s %-16s "
-					"%-20s\n\t%-13s %-4s %s\n", ctype, device, vid, pid,
-				    display_string(phys.dp_serial), sizestr, statestr, slotname);
+							   "%-20s\n\t%-13s %-4s %s\n", connection_type, devicename, vendor_id, product_id,
+					   display_string(phys.dp_serialnumber), sizestr, statestr, slotname);
 			}
 		} else {
 			if (!opts->di_scripted) {
-				printf("%s\t%s\t%s\t%s\t%s\t%s\t%s\n", ctype, device, vid, pid, sizestr,
-				    display_tristate(removable), display_tristate(ssd));
+				printf("%s\t%s\t%s\t%s\t%s\t%s\t%s\n", connection_type, devicename, vendor_id, product_id, sizestr,
+					   display_tristate(is_removable), display_tristate(is_ssd));
 			} else {
 				printf("%-7s %-22s  %-8s %-16s "
-					"%-13s %-3s %-3s\n", ctype, device, vid, pid, sizestr,
-				    display_tristate(removable), display_tristate(ssd));
+							   "%-13s %-3s %-3s\n", connection_type, devicename, vendor_id, product_id, sizestr,
+					   display_tristate(is_removable), display_tristate(is_ssd));
 			}
 		}
 
-		free(ctype);
+		free(connection_type);
 		nvlist_free(cattrs);
 		nvlist_free(dattrs);
 		dm_free_descriptors(controller);
 		dm_free_descriptors(disk);
 	}
-	if(opts->di_json) {
+	if (opts->di_json) {
 		printf("}}");
 		printf("\n");
 	}
@@ -530,15 +540,15 @@ int main(int argc, char *argv[]) {
 	if (!opts.di_scripted) {
 		if (opts.di_physical) {
 			printf("DISK                    VID      PID"
-			    "              SERIAL               FLT LOC"
-			    " LOCATION\n");
+						   "              SERIAL               FLT LOC"
+						   " LOCATION\n");
 		} else if (opts.di_condensed) {
 			printf("TYPE    DISK                    VID      PID"
-			    "              SERIAL\n");
+						   "              SERIAL\n");
 			printf("\tSIZE          FLRS LOCATION\n");
 		} else {
 			printf("TYPE    DISK                    VID      PID"
-			    "              SIZE          RMV SSD\n");
+						   "              SIZE          RMV SSD\n");
 		}
 	}
 

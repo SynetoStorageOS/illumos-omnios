@@ -34,7 +34,7 @@ long get_error_counter_by_serial_number(char const *serial, char *error_counter_
 	int kstat_sd_instance = 0;
 	int i = 0;
 
-	if (!serial) {
+	if (strlen(serial) == 0) {
 		return -1;
 	}
 
