@@ -417,11 +417,8 @@ static void enumerate_disks(di_opts_t *opts) {
 							   "}"
 						   "}", devicename,
 				   connection_type, devicename, vendor_id, product_id,
-				   display_string(phys.dp_serialnumber), total, phys.dp_faulty ? "true" : "false", phys.dp_identifying
-																								   ? "true" : "false",
-				   is_removable
-				   ? "true" : "false", is_ssd
-									   ? "true" : "false",
+				   display_string(phys.dp_serialnumber), total, phys.dp_faulty ? "true" : "false", phys.dp_identifying ? "true" : "false",
+				   is_removable ? "true" : "false", is_ssd ? "true" : "false",
 				   get_error_counter_by_serial_number((phys.dp_serialnumber == NULL) ? "" : phys.dp_serialnumber,
 													  "Hard Errors"),
 				   get_error_counter_by_serial_number((phys.dp_serialnumber == NULL) ? "" : phys.dp_serialnumber,
