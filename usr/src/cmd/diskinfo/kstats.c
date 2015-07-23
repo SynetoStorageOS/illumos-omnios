@@ -38,6 +38,7 @@ long get_error_counter_by_serial_number(char const *serial, char *error_counter_
 		return -1;
 	}
 
+
 	kstat_t *ks_p;
 	ks_ctl = kstat_open();
 	for (ks_p = ks_ctl->kc_chain; ks_p != NULL; ks_p = ks_p->ks_next) {
@@ -48,8 +49,7 @@ long get_error_counter_by_serial_number(char const *serial, char *error_counter_
 
 	for (i = 0; i < kstat_sd_instance; i++) {
 		kstat_serial = getKStatString(ks_ctl, "sderr", kstat_sds[i], "Serial No");
-		if (kstat_serial != NULL && strcmp(kstat_serial, serial)) {
-			kstat_close(ks_ctl);
+		if (kstat_serial != NULL && strcmp(kstat_serial, serial) != NULL) {
 			return getKStatNumber(ks_ctl, "sderr", kstat_sds[i], error_counter_name);
 		}
 	}
