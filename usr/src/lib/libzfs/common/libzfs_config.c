@@ -247,7 +247,7 @@ zpool_get_features(zpool_handle_t *zhp)
 	}
 
 	if (nvlist_lookup_nvlist(config, ZPOOL_CONFIG_FEATURE_STATS,
-	    &features) != 0) return 0;
+	    &features) != 0) return NULL;
 
 	return (features);
 }
