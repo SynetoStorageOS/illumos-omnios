@@ -246,8 +246,8 @@ zpool_get_features(zpool_handle_t *zhp)
 		config = zpool_get_config(zhp, NULL);
 	}
 
-	verify(nvlist_lookup_nvlist(config, ZPOOL_CONFIG_FEATURE_STATS,
-	    &features) == 0);
+	if (nvlist_lookup_nvlist(config, ZPOOL_CONFIG_FEATURE_STATS,
+	    &features) != 0) return 0;
 
 	return (features);
 }
