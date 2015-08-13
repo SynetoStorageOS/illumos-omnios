@@ -274,7 +274,11 @@ static struct dev_ops stmf_ops = {
 	NULL			/* power */
 };
 
-#define	STMF_NAME		"COMSTAR STMF"
+#ifdef DEBUG
+#define	STMF_NAME		"COMSTAR STMFd+" __DATE__ " " __TIME__
+#else
+#define	STMF_NAME		"COMSTAR STMF+"
+#endif
 #define	STMF_MODULE_NAME	"stmf"
 
 static struct modldrv modldrv = {
@@ -4048,13 +4052,29 @@ stmf_task_alloc(struct stmf_local_port *lport, stmf_scsi_session_t *ss,
 	} else {
 		lu = lun_map_ent->ent_lu;
 	}
+
 	ilu = lu->lu_stmf_private;
 	if (ilu->ilu_flags & ILU_RESET_ACTIVE) {
 		rw_exit(iss->iss_lockp);
 		return (NULL);
 	}
-	ASSERT(lu == dlun0 || (ilu->ilu_state != STMF_STATE_OFFLINING &&
-	    ilu->ilu_state != STMF_STATE_OFFLINE));
+
+	/*
+	 * if the LUN is being offlined or is offline then only command
+	 * that are to query the LUN are allowed.  These are handled in
+	 * stmf via the dlun0 vector.  It is possible that a race condition
+	 * will cause other commands to arrive while the lun is in the
+	 * process of being offlined.  Check for those and just let the
+	 * protocol stack handle the error.
+	 */
+	if ((ilu->ilu_state == STMF_STATE_OFFLINING) ||
+	    (ilu->ilu_state == STMF_STATE_OFFLINE)) {
+		if (lu != dlun0) {
+			rw_exit(iss->iss_lockp);
+			return (NULL);
+		}
+	}
+
 	do {
 		if (ilu->ilu_free_tasks == NULL) {
 			new_task = 1;
@@ -4403,8 +4423,12 @@ stmf_task_free(scsi_task_t *task)
 	    task->task_stmf_private;
 	stmf_i_scsi_session_t *iss = (stmf_i_scsi_session_t *)
 	    task->task_session->ss_stmf_private;
+	stmf_lu_t *lu = task->task_lu;
 
 	stmf_task_audit(itask, TE_TASK_FREE, CMD_OR_IOF_NA, NULL);
+
+	if ((lu != NULL) && (lu->lu_task_done != NULL))
+		lu->lu_task_done(task, 4);
 
 	stmf_free_task_bufs(itask, lport);
 	stmf_itl_task_done(itask);
@@ -4786,6 +4810,7 @@ stmf_send_status_done(scsi_task_t *task, stmf_status_t s, uint32_t iof)
 	    (stmf_i_scsi_task_t *)task->task_stmf_private;
 	stmf_worker_t *w = itask->itask_worker;
 	uint32_t new, old;
+	uint8_t free_it, queue_it;
 
 	stmf_task_audit(itask, TE_SEND_STATUS_DONE, iof, NULL);
 
@@ -4796,22 +4821,60 @@ stmf_send_status_done(scsi_task_t *task, stmf_status_t s, uint32_t iof)
 			mutex_exit(&w->worker_lock);
 			return;
 		}
-		if (old & ITASK_IN_WORKER_QUEUE) {
-			cmn_err(CE_PANIC, "status completion received"
-			    " when task is already in worker queue "
-			    " task = %p", (void *)task);
+		free_it = 0;
+		if (iof & STMF_IOF_LPORT_DONE) {
+			new &= ~ITASK_KNOWN_TO_TGT_PORT;
+			free_it = 1;
 		}
-		new |= ITASK_IN_WORKER_QUEUE;
+		/*
+		 * If the task is known to LU then queue it. But if
+		 * it is already queued (multiple completions) then
+		 * just update the buffer information by grabbing the
+		 * worker lock. If the task is not known to LU,
+		 * completed/aborted, then see if we need to
+		 * free this task.
+		 */
+		if (old & ITASK_KNOWN_TO_LU) {
+			free_it = 0;
+			queue_it = 1;
+			if (old & ITASK_IN_WORKER_QUEUE) {
+				cmn_err(CE_PANIC, "status completion received"
+				    " when task is already in worker queue "
+				    " task = %p", (void *)task);
+			}
+			new |= ITASK_IN_WORKER_QUEUE;
+		} else {
+			queue_it = 0;
+		}
 	} while (atomic_cas_32(&itask->itask_flags, old, new) != old);
 	task->task_completion_status = s;
 
-	ASSERT(itask->itask_ncmds < ITASK_MAX_NCMDS);
-	itask->itask_cmd_stack[itask->itask_ncmds++] =
-	    ITASK_CMD_STATUS_DONE;
-	STMF_ENQUEUE_ITASK(w, itask);
-	if ((w->worker_flags & STMF_WORKER_ACTIVE) == 0)
-		cv_signal(&w->worker_cv);
+	if (queue_it == free_it) {
+		cmn_err(CE_NOTE, "%s task being both queued and freed",
+		    __func__);
+	}
+
+	if (queue_it) {
+		ASSERT(itask->itask_ncmds < ITASK_MAX_NCMDS);
+		itask->itask_cmd_stack[itask->itask_ncmds++] =
+		    ITASK_CMD_STATUS_DONE;
+		STMF_ENQUEUE_ITASK(w, itask);
+		if ((w->worker_flags & STMF_WORKER_ACTIVE) == 0)
+			cv_signal(&w->worker_cv);
+	}
 	mutex_exit(&w->worker_lock);
+
+	if (free_it) {
+		if ((itask->itask_flags & (ITASK_KNOWN_TO_LU |
+		    ITASK_KNOWN_TO_TGT_PORT | ITASK_IN_WORKER_QUEUE |
+		    ITASK_BEING_ABORTED)) == 0) {
+			stmf_task_free(task);
+		} else {
+			cmn_err(CE_PANIC, "LU is done with the task but LPORT "
+			    " is not done, itask %p itask_flags %x",
+			    (void *)itask, itask->itask_flags);
+		}
+	}
 }
 
 void
@@ -6275,11 +6338,9 @@ out_itask_flag_loop:
 			lu->lu_dbuf_xfer_done(task, dbuf);
 			break;
 		case ITASK_CMD_STATUS_DONE:
-			lu->lu_task_done(task, 10);
-			stmf_task_free(task);
+			lu->lu_send_status_done(task);
 			break;
 		case ITASK_CMD_ABORT:
-			lu->lu_task_done(task, 11);
 			if (abort_free) {
 				stmf_task_free(task);
 			} else {
