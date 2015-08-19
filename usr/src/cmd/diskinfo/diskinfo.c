@@ -68,6 +68,7 @@ typedef struct di_phys {
 	int dp_slotnumber;
 	int dp_faulty;
 	int dp_identifying;
+	boolean_t dp_isBlinkable;
 } di_phys_t;
 
 static void __NORETURN
@@ -189,6 +190,7 @@ static int disk_walker(topo_hdl_t *hp, tnode_t *np, void *arg) {
 						break;
 					case TOPO_LED_TYPE_LOCATE:
 						pp->dp_identifying |= mode;
+						pp->dp_isBlinkable = B_TRUE;
 						break;
 					default:
 						break;
@@ -403,6 +405,7 @@ static void enumerate_disks(di_opts_t *opts) {
 						   "\"state\":"
 							   "{\"isFaulty\":%s,"
 							   "\"isIdentifying\":%s,"
+							   "\"isBlinkable\":%s,"
 							   "\"isRemovable\": %s,"
 							   "\"isSsd\": %s,"
 							   "\"hardErrors\": %ld,"
@@ -417,7 +420,7 @@ static void enumerate_disks(di_opts_t *opts) {
 							   "}"
 						   "}", devicename,
 				   connection_type, devicename, vendor_id, product_id,
-				   display_string(phys.dp_serialnumber), total, phys.dp_faulty ? "true" : "false", phys.dp_identifying ? "true" : "false",
+				   display_string(phys.dp_serialnumber), total, phys.dp_faulty ? "true" : "false", phys.dp_identifying ? "true" : "false", phys.dp_isBlinkable ? "true" : "false",
 				   is_removable ? "true" : "false", is_ssd ? "true" : "false",
 				   get_error_counter_by_serial_number((phys.dp_serialnumber == NULL) ? "" : phys.dp_serialnumber,
 													  "Hard Errors"),
